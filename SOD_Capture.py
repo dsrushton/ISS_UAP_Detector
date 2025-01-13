@@ -121,17 +121,29 @@ class CaptureManager:
             if self.is_paused():
                 return
             
-            # Handle darkness by pausing only, no save
-            #if detections.darkness_detected:
-            #    self.pause_capture(DARKNESS_PAUSE_TIME)
-            #    return
-            
             # Only save if we have anomalies and enough time has passed
             if detections.anomalies:
                 if current_time - self.last_save_time >= SAVE_INTERVAL:
-                    self.save_detection(frame, debug_view)
+                    # Create filename using video counter and letter suffix
+                    filename = f"{self.current_video_counter:05d}-{self.current_jpg_suffix}.jpg"
+                    save_path = os.path.join(self.save_dir, filename)
+                    
+                    # Add to save queue
+                    if debug_view is not None:
+                        # Create combined image
+                        h, w = frame.shape[:2]
+                        debug_h, debug_w = debug_view.shape[:2]
+                        combined = np.zeros((h, w + debug_w, 3), dtype=np.uint8)
+                        combined[0:debug_h, 0:debug_w] = debug_view
+                        combined[0:h, debug_w:] = frame
+                        self.save_queue.put((combined, save_path))
+                    else:
+                        self.save_queue.put((frame, save_path))
+                    
+                    # Update state
+                    self.current_jpg_suffix = chr(ord(self.current_jpg_suffix) + 1)
                     self.last_save_time = current_time
-            
+                    
         except Exception as e:
             print(f"Error processing detections: {str(e)}")
 

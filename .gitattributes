@@ -1,2 +1,13 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Python files should use LF
+*.py text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+*.gitattributes text eol=lf
+*.gitignore text eol=lf
+
+# Windows batch files should use CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf

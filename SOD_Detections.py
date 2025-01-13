@@ -15,7 +15,7 @@ import time
 
 from SOD_Constants import (
     DEVICE, MODEL_PATH, CLASS_NAMES, CLASS_THRESHOLDS,
-    MIN_BRIGHTNESS, MAX_BRIGHTNESS, MIN_PIXEL_DIM
+    MIN_BRIGHTNESS, MAX_BRIGHTNESS, MIN_PIXEL_DIM, CROPPED_WIDTH
 )
 
 @dataclass
@@ -249,6 +249,11 @@ class SpaceObjectDetector:
                 print(f"\nTest frame {self.inject_test_frames}/10")
                 self.inject_test_frames -= 1
             
+            # Ensure frame is cropped before processing
+            if frame.shape[1] != CROPPED_WIDTH:
+                from SOD_Utils import crop_frame
+                frame = crop_frame(frame)
+            
             is_rcnn_frame = (self.frame_count % self.rcnn_cycle) == 0
             metadata = {'anomaly_metrics': []}
             
@@ -265,10 +270,12 @@ class SpaceObjectDetector:
                 for box in self.last_rcnn_results['boxes']['td']:
                     x1, y1, x2, y2 = box
                     td_area = (x2 - x1) * (y2 - y1)
-                    if td_area > frame_area * 0.40:
-                        darkness_detected = True
-                        metadata['darkness_area_ratio'] = td_area / frame_area
-                        break
+                    # if td_area > frame_area * 0.40:  # Commenting out darkness pause
+                    #     darkness_detected = True
+                    #     metadata['darkness_area_ratio'] = td_area / frame_area
+                    #     break
+                    # Still track the ratio for debugging
+                    metadata['darkness_area_ratio'] = td_area / frame_area
             
             # Run anomaly detection if not dark
             anomalies = []

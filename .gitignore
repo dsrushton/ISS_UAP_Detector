@@ -1,0 +1,35 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environment
+venv/
+env/
+.env/
+
+# IDE settings
+.vscode/
+.idea/
+
+# Logs and databases
+*.log
+*.sqlite
+
+# Local development settings
+.env
+.env.local
+
+# Video and image files (if you don't want to track them)
+*.avi
+*.jpg
+*.png
+
+# Line endings
+*.orig
+*~ 

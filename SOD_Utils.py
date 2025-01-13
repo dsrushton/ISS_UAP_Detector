@@ -41,6 +41,9 @@ def crop_frame(frame: np.ndarray) -> np.ndarray:
     """
     from SOD_Constants import CROP_LEFT, CROP_RIGHT
     
+    if frame is None:
+        return None
+        
     # Get frame dimensions
     h, w = frame.shape[:2]
     
@@ -48,7 +51,6 @@ def crop_frame(frame: np.ndarray) -> np.ndarray:
     left = min(CROP_LEFT, w//4)  # Limit to 1/4 of width
     right = min(CROP_RIGHT, w//4)
     
-    # Return cropped frame
     return frame[:, left:w-right]
 
 def calculate_intersection(box1, box2):

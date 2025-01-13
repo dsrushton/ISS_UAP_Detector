@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 
-from SOD_Constants import CLASS_COLORS, CLASS_NAMES
+from SOD_Constants import CLASS_COLORS, CLASS_NAMES, CROPPED_WIDTH
 from SOD_Detections import DetectionResults
 
 class DisplayManager:
@@ -22,12 +22,11 @@ class DisplayManager:
         # Get ROI dimensions
         roi_h, roi_w = roi.shape[:2]
         
-        # Create debug view with same width as cropped frame (939 pixels)
-        cropped_width = 1280 - 165 - 176  # Main frame width minus crops
-        debug_view = np.zeros((roi_h, cropped_width, 3), dtype=np.uint8)
+        # Create debug view with same width as cropped frame
+        debug_view = np.zeros((roi_h, CROPPED_WIDTH, 3), dtype=np.uint8)
         
         # Calculate center offset to place ROI in middle
-        x_offset = (cropped_width - roi_w) // 2
+        x_offset = (CROPPED_WIDTH - roi_w) // 2
         
         # Copy ROI into center of debug view
         debug_view[:, x_offset:x_offset+roi_w] = roi
@@ -49,17 +48,17 @@ class DisplayManager:
         if anomalies:
             for x, y, w, h in anomalies:
                 # Draw shifted rectangle
-                cv2.rectangle(overlay, 
+                cv2.rectangle(debug_view, 
                             (x + x_offset, y), 
                             (x + w + x_offset, y + h), 
-                            (0, 0, 255), -1)
+                            (0, 0, 255), 2)  # Red color, thickness 2
                 
                 # Add metrics if available
                 if metadata and 'anomaly_metrics' in metadata:
                     for metric in metadata['anomaly_metrics']:
-                        if metric['position'] == (x, y, w, h):
+                        if metric['position'] == (x + x_offset, y, w, h):  # Need to adjust position check
                             text = f"B:{metric['obj_brightness']:.1f} C:{metric['contrast']:.1f}"
-                            cv2.putText(overlay, text, 
+                            cv2.putText(debug_view, text, 
                                       (x + x_offset, y - 5),
                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
         
@@ -74,51 +73,23 @@ class DisplayManager:
         return debug_view
 
     def draw_detections(self, frame: np.ndarray, detections: DetectionResults) -> np.ndarray:
-        """
-        Draw detection boxes and labels on frame.
-        
-        Args:
-            frame: Input frame
-            detections: Detection results containing boxes and metadata
-            
-        Returns:
-            Frame with annotations
-        """
+        """Draw detection boxes and labels on frame."""
         annotated_frame = frame.copy()
         
         # Handle special cases first
         if detections.darkness_detected:
             return self.draw_darkness_overlay(annotated_frame)
-        elif 'nofeed' in detections.rcnn_boxes:  # Check for nofeed detection
+        elif 'nofeed' in detections.rcnn_boxes:
             return self.draw_nofeed_overlay(annotated_frame)
         
-        # Draw RCNN detections
+        # Draw RCNN detections only (no anomaly boxes)
         for class_name, boxes in detections.rcnn_boxes.items():
             scores = detections.rcnn_scores[class_name]
             color = CLASS_COLORS[class_name]
             
             for box, score in zip(boxes, scores):
                 x1, y1, x2, y2 = map(int, box)
-                
-                if class_name == 'panel':
-                    # Draw actual panel box
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-                    
-                    # Draw expanded exclusion zone with dashed lines
-                    width = x2 - x1
-                    height = y2 - y1
-                    ex1 = x1                    # Left stays same
-                    ey1 = int(y1 - height * 0.10)  # Top expands up
-                    ex2 = int(x2 + width * 0.10)   # Right expands
-                    ey2 = y2                    # Bottom stays same
-                    
-                    # Draw dashed lines for exclusion zone
-                    for i in range(ex1, ex2, 10):
-                        cv2.line(annotated_frame, (i, ey1), (min(i+5, ex2), ey1), color, 1)
-                    for i in range(ey1, ey2, 10):
-                        cv2.line(annotated_frame, (ex2, i), (ex2, min(i+5, ey2)), color, 1)
-                else:
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
                 
                 # Prepare label
                 label_text = f"{class_name}: {score:.2f}"
@@ -208,16 +179,7 @@ class DisplayManager:
         return frame
 
     def create_combined_view(self, frame: np.ndarray, debug: np.ndarray) -> np.ndarray:
-        """
-        Create combined view with debug information.
-        
-        Args:
-            frame: Original frame
-            debug: Debug view
-            
-        Returns:
-            Combined visualization frame
-        """
+        """Create combined view with debug information."""
         if self.debug_view is None:
             return frame
             

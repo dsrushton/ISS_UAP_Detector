@@ -53,6 +53,7 @@ CLASS_THRESHOLDS = {
 # Frame Processing
 CROP_LEFT = 165    # Pixels to crop from left
 CROP_RIGHT = 176   # Pixels to crop from right
+CROPPED_WIDTH = 1280 - CROP_LEFT - CROP_RIGHT  # = 939 pixels
 
 # Anomaly Detection Parameters
 MIN_PIXEL_DIM = 6

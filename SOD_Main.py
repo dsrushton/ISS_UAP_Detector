@@ -5,11 +5,15 @@ Handles video streaming and orchestrates the detection, display, and capture pro
 
 import cv2
 import threading
-from typing import Optional
 import time
 import os
+from typing import Optional
 
-from SOD_Constants import MAX_CONSECUTIVE_ERRORS, BURST_CAPTURE_FRAMES
+from SOD_Constants import (
+    MAX_CONSECUTIVE_ERRORS, 
+    BURST_CAPTURE_FRAMES, 
+    CROPPED_WIDTH
+)
 from SOD_Utils import get_best_stream_url, crop_frame
 from SOD_Video import VideoManager
 
@@ -69,12 +73,10 @@ class SpaceObjectDetectionSystem:
         """Load test image for injection."""
         try:
             self.test_image = cv2.imread(path)
-            if self.test_image is not None:
-                self.test_image = cv2.resize(self.test_image, (1280, 720))
-                return True
+            return self.test_image is not None
         except Exception as e:
             print(f"Error loading test image: {e}")
-        return False
+            return False
 
     def process_frame(self, frame) -> Optional[bool]:
         """
@@ -92,11 +94,14 @@ class SpaceObjectDetectionSystem:
                 frame = self.test_image.copy()
                 print(f"\nTest frame {self.inject_test_frames}/10")
                 self.inject_test_frames -= 1
+            else:
+                # Crop frame from live feed (test frame is already 939x720)
+                frame = crop_frame(frame)
             
-            # Crop the frame
-            frame = crop_frame(frame)
+            # Add frame to buffer
+            self.video.add_to_buffer(frame)
             
-            # Run detection
+            # Run detection on cropped frame
             predictions = self.detector.process_frame(frame)
             if predictions is None:
                 return None
@@ -160,9 +165,6 @@ class SpaceObjectDetectionSystem:
             elif self.video.is_recording:
                 # Update ongoing video recording
                 self.video.update_recording(annotated_frame, False, debug_view)
-            
-            # Add frame to buffer for video recording
-            self.video.add_to_buffer(annotated_frame)
             
             # Increment frame counter
             self.frame_count += 1
