@@ -5,11 +5,15 @@ Handles video streaming and orchestrates the detection, display, and capture pro
 
 import cv2
 import threading
-from typing import Optional
 import time
 import os
+from typing import Optional
 
-from SOD_Constants import MAX_CONSECUTIVE_ERRORS, BURST_CAPTURE_FRAMES
+from SOD_Constants import (
+    MAX_CONSECUTIVE_ERRORS, 
+    BURST_CAPTURE_FRAMES, 
+    CROPPED_WIDTH
+)
 from SOD_Utils import get_best_stream_url, crop_frame
 from SOD_Video import VideoManager
 
@@ -69,12 +73,10 @@ class SpaceObjectDetectionSystem:
         """Load test image for injection."""
         try:
             self.test_image = cv2.imread(path)
-            if self.test_image is not None:
-                self.test_image = cv2.resize(self.test_image, (1280, 720))
-                return True
+            return self.test_image is not None
         except Exception as e:
             print(f"Error loading test image: {e}")
-        return False
+            return False
 
     def process_frame(self, frame) -> Optional[bool]:
         """
@@ -92,11 +94,14 @@ class SpaceObjectDetectionSystem:
                 frame = self.test_image.copy()
                 print(f"\nTest frame {self.inject_test_frames}/10")
                 self.inject_test_frames -= 1
+            else:
+                # Crop frame from live feed (test frame is already 939x720)
+                frame = crop_frame(frame)
             
-            # Crop the frame
-            frame = crop_frame(frame)
+            # Add frame to buffer
+            self.video.add_to_buffer(frame)
             
-            # Run detection
+            # Run detection on cropped frame
             predictions = self.detector.process_frame(frame)
             if predictions is None:
                 return None
@@ -161,9 +166,6 @@ class SpaceObjectDetectionSystem:
                 # Update ongoing video recording
                 self.video.update_recording(annotated_frame, False, debug_view)
             
-            # Add frame to buffer for video recording
-            self.video.add_to_buffer(annotated_frame)
-            
             # Increment frame counter
             self.frame_count += 1
             
@@ -199,54 +201,60 @@ class SpaceObjectDetectionSystem:
         if not self.initialize():
             return
             
+        self.is_running = True
+        
         while self.is_running:  # Outer loop for reconnection attempts
-            # Handle YouTube URLs
-            if is_youtube:
-                stream_url = get_best_stream_url(source)
-                if not stream_url:
-                    print("\nFailed to get stream URL. Retrying in 5 seconds...")
+            try:
+                # Handle YouTube URLs
+                if is_youtube:
+                    stream_url = get_best_stream_url(source)
+                    if not stream_url:
+                        print("\nFailed to get stream URL. Retrying in 5 seconds...")
+                        time.sleep(5)
+                        continue
+                    source = stream_url
+
+                # Initialize video capture
+                print("\nConnecting to video source...")
+                if not self.video.set_source(source):
+                    print("\nError: Could not open video source. Retrying in 5 seconds...")
                     time.sleep(5)
                     continue
-                source = stream_url
 
-            # Initialize video capture
-            print("\nConnecting to video source...")
-            cap = cv2.VideoCapture(source)
-            if not cap.isOpened():
-                print("\nError: Could not open video source. Retrying in 5 seconds...")
-                time.sleep(5)
-                continue
-
-            # Main processing loop
-            consecutive_errors = 0
-            
-            while self.is_running:
-                # Read frame
-                ret, frame = cap.read()
-                if not ret:
-                    consecutive_errors += 1
-                    print(f"\nFrame read error ({consecutive_errors})")
-                    if consecutive_errors > MAX_CONSECUTIVE_ERRORS:
-                        print("\nToo many consecutive errors. Attempting to reconnect in 5 seconds...")
-                        break  # Break inner loop to attempt reconnection
-                    continue
-                    
-                # Reset error counter on successful read
+                # Main processing loop
                 consecutive_errors = 0
                 
-                # Process frame
-                result = self.process_frame(frame)
-                if result is None:
-                    consecutive_errors += 1
-                    continue
-                elif result is False:
-                    self.is_running = False  # User quit
-                    break
+                while self.is_running:
+                    # Read frame
+                    ret, frame = self.video.get_frame()
+                    if not ret:
+                        consecutive_errors += 1
+                        print(f"\nFrame read error ({consecutive_errors})")
+                        if consecutive_errors > MAX_CONSECUTIVE_ERRORS:
+                            print("\nToo many consecutive errors. Attempting to reconnect in 5 seconds...")
+                            break  # Break inner loop to attempt reconnection
+                        continue
+                        
+                    # Reset error counter on successful read
+                    consecutive_errors = 0
                     
-            # Clean up current capture before reconnection attempt
-            cap.release()
-            if self.is_running:  # Only sleep if we're retrying
-                time.sleep(5)
+                    # Process frame
+                    result = self.process_frame(frame)
+                    if result is None:
+                        consecutive_errors += 1
+                        continue
+                    elif result is False:
+                        self.is_running = False  # User quit
+                        break
+                        
+                # Clean up current capture before reconnection attempt
+                self.video.cap.release()
+                if self.is_running:  # Only sleep if we're retrying
+                    time.sleep(5)
+                
+            except Exception as e:
+                print(f"\nError processing video stream: {str(e)}")
+                self.is_running = False
             
         # Final cleanup
         cv2.destroyAllWindows()
