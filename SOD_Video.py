@@ -51,15 +51,16 @@ class VideoManager:
             combined_w = w + debug_w
             combined_h = max(h, debug_h)
             
-            # Initialize writer with combined dimensions
-            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            # Initialize writer with better compression
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Better compression
             filename = f"{self.counter:05d}.avi"
             self.current_video_path = os.path.join(VIDEO_SAVE_DIR, filename)
             self.writer = cv2.VideoWriter(
                 self.current_video_path,
                 fourcc,
                 VIDEO_FPS,
-                (combined_w, combined_h)
+                (combined_w, combined_h),
+                True  # isColor
             )
             
             # Write buffered frames - ensure they're cropped
@@ -72,14 +73,15 @@ class VideoManager:
                 self.writer.write(combined)
         else:
             # Regular video without debug view
-            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Better compression
             filename = f"{self.counter:05d}.avi"
             self.current_video_path = os.path.join(VIDEO_SAVE_DIR, filename)
             self.writer = cv2.VideoWriter(
                 self.current_video_path,
                 fourcc,
                 VIDEO_FPS,
-                (w, h)
+                (w, h),
+                True  # isColor
             )
             
             # Write buffered frames
