@@ -65,11 +65,11 @@ MAX_CONSECUTIVE_ERRORS = 30
 BURST_CAPTURE_FRAMES = 100
 
 # Save Directory Structure
-DEFAULT_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/SpaceObjectDetector/Detections/AVI/JPG"
-RAW_SUBDIR = "raw"
+DEFAULT_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/ISS_UAP_Detector/Detections/JPG"
+RAW_SUBDIR = "Burst_raw"
 
 # Video Recording Settings
 BUFFER_SECONDS = 3
 POST_DETECTION_SECONDS = 2
 VIDEO_FPS = 30
-VIDEO_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/SpaceObjectDetector/Detections/AVI"
+VIDEO_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/ISS_UAP_Detector/Detections/AVI"

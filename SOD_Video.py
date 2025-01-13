@@ -4,6 +4,7 @@ from collections import deque
 import time
 import os
 from typing import Optional, Tuple
+import logging
 
 from SOD_Constants import (
     BUFFER_SECONDS, POST_DETECTION_SECONDS, 
@@ -20,6 +21,7 @@ class VideoManager:
         self.counter = 0
         self.last_detection_time = 0
         self.current_video_path = None
+        self.cap = None  # Initialize as None, will set up in set_source()
         
         # Ensure save directory exists
         os.makedirs(VIDEO_SAVE_DIR, exist_ok=True)
@@ -123,4 +125,36 @@ class VideoManager:
     def cleanup(self) -> None:
         """Clean up resources."""
         if self.writer:
-            self.writer.release() 
+            self.writer.release()
+        if self.cap:
+            self.cap.release()
+    
+    def set_source(self, source: str) -> bool:
+        """Set video source and initialize capture."""
+        try:
+            if self.cap is not None:
+                self.cap.release()
+            
+            self.cap = cv2.VideoCapture(source)
+            if not self.cap.isOpened():
+                print(f"Failed to open video source: {source}")
+                return False
+            
+            return True
+        except Exception as e:
+            print(f"Error setting video source: {e}")
+            return False
+    
+    def get_frame(self) -> Tuple[bool, Optional[np.ndarray]]:
+        """Get frame from video source."""
+        try:
+            if self.cap is None:
+                return False, None
+            
+            ret, frame = self.cap.read()
+            if ret:
+                self.add_to_buffer(frame)
+            return ret, frame
+        except Exception as e:
+            logging.error(f"Error getting frame: {e}")
+            return False, None 

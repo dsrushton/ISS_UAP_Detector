@@ -199,54 +199,60 @@ class SpaceObjectDetectionSystem:
         if not self.initialize():
             return
             
+        self.is_running = True
+        
         while self.is_running:  # Outer loop for reconnection attempts
-            # Handle YouTube URLs
-            if is_youtube:
-                stream_url = get_best_stream_url(source)
-                if not stream_url:
-                    print("\nFailed to get stream URL. Retrying in 5 seconds...")
+            try:
+                # Handle YouTube URLs
+                if is_youtube:
+                    stream_url = get_best_stream_url(source)
+                    if not stream_url:
+                        print("\nFailed to get stream URL. Retrying in 5 seconds...")
+                        time.sleep(5)
+                        continue
+                    source = stream_url
+
+                # Initialize video capture
+                print("\nConnecting to video source...")
+                if not self.video.set_source(source):
+                    print("\nError: Could not open video source. Retrying in 5 seconds...")
                     time.sleep(5)
                     continue
-                source = stream_url
 
-            # Initialize video capture
-            print("\nConnecting to video source...")
-            cap = cv2.VideoCapture(source)
-            if not cap.isOpened():
-                print("\nError: Could not open video source. Retrying in 5 seconds...")
-                time.sleep(5)
-                continue
-
-            # Main processing loop
-            consecutive_errors = 0
-            
-            while self.is_running:
-                # Read frame
-                ret, frame = cap.read()
-                if not ret:
-                    consecutive_errors += 1
-                    print(f"\nFrame read error ({consecutive_errors})")
-                    if consecutive_errors > MAX_CONSECUTIVE_ERRORS:
-                        print("\nToo many consecutive errors. Attempting to reconnect in 5 seconds...")
-                        break  # Break inner loop to attempt reconnection
-                    continue
-                    
-                # Reset error counter on successful read
+                # Main processing loop
                 consecutive_errors = 0
                 
-                # Process frame
-                result = self.process_frame(frame)
-                if result is None:
-                    consecutive_errors += 1
-                    continue
-                elif result is False:
-                    self.is_running = False  # User quit
-                    break
+                while self.is_running:
+                    # Read frame
+                    ret, frame = self.video.get_frame()
+                    if not ret:
+                        consecutive_errors += 1
+                        print(f"\nFrame read error ({consecutive_errors})")
+                        if consecutive_errors > MAX_CONSECUTIVE_ERRORS:
+                            print("\nToo many consecutive errors. Attempting to reconnect in 5 seconds...")
+                            break  # Break inner loop to attempt reconnection
+                        continue
+                        
+                    # Reset error counter on successful read
+                    consecutive_errors = 0
                     
-            # Clean up current capture before reconnection attempt
-            cap.release()
-            if self.is_running:  # Only sleep if we're retrying
-                time.sleep(5)
+                    # Process frame
+                    result = self.process_frame(frame)
+                    if result is None:
+                        consecutive_errors += 1
+                        continue
+                    elif result is False:
+                        self.is_running = False  # User quit
+                        break
+                        
+                # Clean up current capture before reconnection attempt
+                self.video.cap.release()
+                if self.is_running:  # Only sleep if we're retrying
+                    time.sleep(5)
+                
+            except Exception as e:
+                print(f"\nError processing video stream: {str(e)}")
+                self.is_running = False
             
         # Final cleanup
         cv2.destroyAllWindows()

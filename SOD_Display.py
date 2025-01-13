@@ -19,31 +19,48 @@ class DisplayManager:
         
     def create_debug_view(self, roi: np.ndarray, contours: list, anomalies: list = None, metadata: dict = None) -> np.ndarray:
         """Create debug visualization with contours and anomalies."""
-        # Create debug view same width as main frame, height from ROI
-        h, w = roi.shape[:2]
-        debug_view = np.zeros((h, roi.shape[1], 3), dtype=np.uint8)  # Full width, ROI height
-        debug_view[:, :w] = roi  # Copy ROI into left portion
+        # Get ROI dimensions
+        roi_h, roi_w = roi.shape[:2]
+        
+        # Create debug view with same width as cropped frame (939 pixels)
+        cropped_width = 1280 - 165 - 176  # Main frame width minus crops
+        debug_view = np.zeros((roi_h, cropped_width, 3), dtype=np.uint8)
+        
+        # Calculate center offset to place ROI in middle
+        x_offset = (cropped_width - roi_w) // 2
+        
+        # Copy ROI into center of debug view
+        debug_view[:, x_offset:x_offset+roi_w] = roi
         overlay = debug_view.copy()
         
         # If nofeed is detected, return blank debug view
         if metadata and metadata.get('nofeed_detected'):
-            return np.zeros_like(debug_view)
+            return debug_view
         
-        # Draw all contours in green (thinner lines)
-        cv2.drawContours(debug_view, contours, -1, (0, 255, 0), 1)
+        # Draw all contours in green (thinner lines), shifted by x_offset
+        shifted_contours = []
+        for contour in contours:
+            shifted_contour = contour.copy()
+            shifted_contour[:, :, 0] += x_offset  # Shift x coordinates
+            shifted_contours.append(shifted_contour)
+        cv2.drawContours(debug_view, shifted_contours, -1, (0, 255, 0), 1)
         
-        # Draw anomaly boxes in red with transparency
+        # Draw anomaly boxes in red with transparency, shifted by x_offset
         if anomalies:
             for x, y, w, h in anomalies:
-                # Draw directly in ROI coordinates
-                cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 0, 255), -1)
+                # Draw shifted rectangle
+                cv2.rectangle(overlay, 
+                            (x + x_offset, y), 
+                            (x + w + x_offset, y + h), 
+                            (0, 0, 255), -1)
                 
                 # Add metrics if available
                 if metadata and 'anomaly_metrics' in metadata:
                     for metric in metadata['anomaly_metrics']:
                         if metric['position'] == (x, y, w, h):
                             text = f"B:{metric['obj_brightness']:.1f} C:{metric['contrast']:.1f}"
-                            cv2.putText(overlay, text, (x, y - 5),
+                            cv2.putText(overlay, text, 
+                                      (x + x_offset, y - 5),
                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
         
         # Blend overlay with original
