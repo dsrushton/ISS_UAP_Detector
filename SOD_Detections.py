@@ -263,10 +263,10 @@ class SpaceObjectDetector:
                 for box in self.last_rcnn_results['boxes']['td']:
                     x1, y1, x2, y2 = box
                     td_area = (x2 - x1) * (y2 - y1)
-                    # if td_area > frame_area * 0.40:  # Commenting out darkness pause
-                    #     darkness_detected = True
-                    #     metadata['darkness_area_ratio'] = td_area / frame_area
-                    #     break
+                    if td_area > frame_area * 0.40:  # Reinstate darkness pause
+                        darkness_detected = True
+                        metadata['darkness_area_ratio'] = td_area / frame_area
+                        break
                     # Still track the ratio for debugging
                     metadata['darkness_area_ratio'] = td_area / frame_area
             
@@ -274,14 +274,19 @@ class SpaceObjectDetector:
             anomalies = []
             space_box = None
             if not darkness_detected and 'space' in self.last_rcnn_results['boxes']:
-                for space_box in self.last_rcnn_results['boxes']['space']:
-                    detected_anomalies, anomaly_metadata = self._detect_anomalies(
-                        frame, space_box,
-                        self.last_rcnn_results['boxes'].get('iss', []),
-                        self.last_rcnn_results['boxes'].get('sun', [])
-                    )
-                    anomalies.extend(detected_anomalies)
-                    metadata.update(anomaly_metadata)
+                # Sort space boxes by y-coordinate (higher in frame = smaller y)
+                space_boxes = sorted(self.last_rcnn_results['boxes']['space'], 
+                                    key=lambda box: box[1])  # Sort by y1 coordinate
+                
+                # Use the highest space box
+                space_box = space_boxes[0]
+                detected_anomalies, anomaly_metadata = self._detect_anomalies(
+                    frame, space_box,
+                    self.last_rcnn_results['boxes'].get('iss', []),
+                    self.last_rcnn_results['boxes'].get('sun', [])
+                )
+                anomalies.extend(detected_anomalies)
+                metadata.update(anomaly_metadata)
             
             # Update metadata - ensure anomaly_metrics exists
             metadata.update({
