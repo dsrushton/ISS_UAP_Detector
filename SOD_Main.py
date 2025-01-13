@@ -12,7 +12,8 @@ from typing import Optional
 from SOD_Constants import (
     MAX_CONSECUTIVE_ERRORS, 
     BURST_CAPTURE_FRAMES, 
-    CROPPED_WIDTH
+    CROPPED_WIDTH,
+    TEST_IMAGE_PATH
 )
 from SOD_Utils import get_best_stream_url, crop_frame
 from SOD_Video import VideoManager
@@ -62,6 +63,10 @@ class SpaceObjectDetectionSystem:
             if not self.capture.initialize():
                 print("Failed to initialize capture system")
                 return False
+                
+            # Load test image
+            if not self.detector.load_test_image(TEST_IMAGE_PATH):
+                print(f"Warning: Could not load test image from {TEST_IMAGE_PATH}")
                 
             return True
             
@@ -178,7 +183,8 @@ class SpaceObjectDetectionSystem:
                 self.inject_test_frames = 10
                 # Load test image if not already loaded
                 if self.test_image is None:
-                    self.load_test_image(r"C:\Users\dsrus\OneDrive\Pictures\sprites1.jpg")
+                    if not self.load_test_image(TEST_IMAGE_PATH):
+                        print(f"Failed to load test image from {TEST_IMAGE_PATH}")
             elif key == ord(' '):
                 print("\nStarting 100 frame burst save to raw directory!")
                 self.burst_remaining = BURST_CAPTURE_FRAMES

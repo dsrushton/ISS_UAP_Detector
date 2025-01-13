@@ -167,3 +167,22 @@ class VideoManager:
         except Exception as e:
             logging.error(f"Error getting frame: {e}")
             return False, None 
+    
+    def reinitialize_source(self) -> bool:
+        """Try to reinitialize video source after connection loss."""
+        try:
+            if self.cap is not None:
+                self.cap.release()
+            
+            # Get fresh stream URL
+            stream_url = get_best_stream_url()
+            if not stream_url:
+                return False
+            
+            # Initialize new capture
+            self.cap = cv2.VideoCapture(stream_url)
+            return self.cap.isOpened()
+        
+        except Exception as e:
+            logging.error(f"Error reinitializing video source: {e}")
+            return False 

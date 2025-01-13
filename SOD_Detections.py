@@ -59,6 +59,9 @@ class SpaceObjectDetector:
                 std=[0.229, 0.224, 0.225]
             )
         ])
+        
+        self.consecutive_lf = 0
+        self.lf_pause_until = 0  # Track when to resume after lens flares
 
     def load_test_image(self, path: str) -> bool:
         """Load test image for injection."""
@@ -79,53 +82,63 @@ class SpaceObjectDetector:
 
     def _analyze_object(self, contour: np.ndarray, gray_frame: np.ndarray) -> tuple[bool, dict]:
         """Analyze if object passes detection criteria"""
-        x, y, w, h = cv2.boundingRect(contour)
-        
-        # Skip tiny objects without printing
-        if w < 5 or h < 5:
+        try:
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            # Skip tiny objects without printing
+            if w < 5 or h < 5:  # Minimum dimensions
+                return False, {}
+            
+            rect_area = w * h
+            contour_area = cv2.contourArea(contour)
+            
+            metrics = {
+                'contour_area': contour_area,
+                'rect_area': rect_area,
+                'aspect_ratio': float(w)/h if h != 0 else 0,
+                'width': w,
+                'height': h
+            }
+            
+            # Size and shape checks first
+            if w > 120 or h > 120:  # Max dimensions
+                return False, metrics
+            if contour_area < 16:  # Minimum area
+                return False, metrics
+            if metrics['aspect_ratio'] > 15 or metrics['aspect_ratio'] < 0.06:  # Aspect ratio
+                return False, metrics
+            
+            # Get brightness metrics
+            mask = np.zeros(gray_frame.shape, dtype=np.uint8)
+            cv2.drawContours(mask, [contour], -1, 255, -1)
+            obj_brightness = cv2.mean(gray_frame, mask=mask)[0]
+            
+            kernel = np.ones((3,3), np.uint8)
+            bg_mask = cv2.dilate(mask, kernel, iterations=2)
+            bg_mask = cv2.bitwise_xor(bg_mask, mask)
+            bg_brightness = cv2.mean(gray_frame, mask=bg_mask)[0]
+            contrast = obj_brightness - bg_brightness
+            
+            # Add brightness metrics to return value
+            metrics.update({
+                'obj_brightness': obj_brightness,
+                'bg_brightness': bg_brightness,
+                'contrast': contrast
+            })
+            
+            # Brightness checks
+            if not (12 < obj_brightness < 100):  # Brightness range
+                return False, metrics
+            if bg_brightness > 40:  # Background threshold
+                return False, metrics
+            if contrast < 12:  # Minimum contrast
+                return False, metrics
+            
+            return True, metrics
+            
+        except Exception as e:
+            print(f"Error in _analyze_object: {str(e)}")
             return False, {}
-        
-        rect_area = w * h
-        contour_area = cv2.contourArea(contour)
-        
-        metrics = {
-            'contour_area': contour_area,
-            'rect_area': rect_area,
-            'aspect_ratio': float(w)/h if h != 0 else 0,
-            'width': w,
-            'height': h
-        }
-        
-        # Adjusted checks for elongated objects
-        if w > 100 or h > 100:  # Allow larger but not huge
-            return False, metrics
-        
-        if contour_area < 12:  # Reduced minimum area
-            return False, metrics
-        
-        # More lenient aspect ratio for elongated objects
-        if metrics['aspect_ratio'] > 8 or metrics['aspect_ratio'] < 0.125:
-            return False, metrics
-        
-        # Get brightness metrics
-        mask = np.zeros(gray_frame.shape, dtype=np.uint8)
-        cv2.drawContours(mask, [contour], -1, 255, -1)
-        obj_brightness = cv2.mean(gray_frame, mask=mask)[0]
-        
-        kernel = np.ones((3,3), np.uint8)
-        bg_mask = cv2.dilate(mask, kernel, iterations=2)
-        bg_mask = cv2.bitwise_xor(bg_mask, mask)
-        bg_brightness = cv2.mean(gray_frame, mask=bg_mask)[0]
-        contrast = obj_brightness - bg_brightness
-        
-        if not (12 < obj_brightness < 100):
-            return False, metrics
-        if bg_brightness > 40:
-            return False, metrics
-        if contrast < 12:
-            return False, metrics
-        
-        return True, metrics
 
     def _detect_anomalies(self, frame: np.ndarray, space_box: tuple, iss_boxes: list = None, sun_boxes: list = None) -> tuple:
         """Find anomalies in space region"""
@@ -135,7 +148,7 @@ class SpaceObjectDetector:
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         
         # Create mask for dark regions (true space)
-        _, dark_mask = cv2.threshold(gray, 40, 255, cv2.THRESH_BINARY_INV)
+        _, dark_mask = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY_INV)
         
         # Apply dark mask to gray image
         masked_gray = cv2.bitwise_and(gray, gray, mask=dark_mask)
@@ -237,6 +250,11 @@ class SpaceObjectDetector:
         try:
             self.frame_count += 1
             
+            # Check if we're in a lens flare pause period
+            current_time = time.time()
+            if current_time < self.lf_pause_until:
+                return None  # Skip detection during pause
+                
             # Handle test frame injection
             if self.inject_test_frames > 0 and self.test_image is not None:
                 frame = self.test_image.copy()
@@ -244,9 +262,9 @@ class SpaceObjectDetector:
                 self.inject_test_frames -= 1
             
             # Remove debug prints for frame shape and RCNN results
-            if frame.shape[1] != CROPPED_WIDTH:
-                from SOD_Utils import crop_frame
-                frame = crop_frame(frame)
+            #if frame.shape[1] != CROPPED_WIDTH:
+                #from SOD_Utils import crop_frame
+                #frame = crop_frame(frame)
             
             is_rcnn_frame = (self.frame_count % self.rcnn_cycle) == 0
             metadata = {'anomaly_metrics': []}
@@ -255,6 +273,12 @@ class SpaceObjectDetector:
                 self.last_rcnn_results = self._run_rcnn_detection(frame)
                 self.last_rcnn_frame = self.frame_count
                 metadata['rcnn_frame'] = True
+                
+                # Check for multiple lens flares in current frame
+                if 'lf' in self.last_rcnn_results['boxes']:
+                    if len(self.last_rcnn_results['boxes']['lf']) >= 3:
+                        self.lf_pause_until = current_time + 10  # Pause for 10 seconds
+                        return None
             
             # Check for darkness
             darkness_detected = False
@@ -265,15 +289,15 @@ class SpaceObjectDetector:
                     td_area = (x2 - x1) * (y2 - y1)
                     if td_area > frame_area * 0.40:  # Reinstate darkness pause
                         darkness_detected = True
-                        metadata['darkness_area_ratio'] = td_area / frame_area
+                        # metadata['darkness_area_ratio'] = td_area / frame_area
                         break
                     # Still track the ratio for debugging
-                    metadata['darkness_area_ratio'] = td_area / frame_area
+                    # metadata['darkness_area_ratio'] = td_area / frame_area
             
             # Run anomaly detection if not dark
             anomalies = []
             space_box = None
-            if not darkness_detected and 'space' in self.last_rcnn_results['boxes']:
+            if not (darkness_detected or 'nofeed' in self.last_rcnn_results['boxes']) and 'space' in self.last_rcnn_results['boxes']:
                 # Sort space boxes by y-coordinate (higher in frame = smaller y)
                 space_boxes = sorted(self.last_rcnn_results['boxes']['space'], 
                                     key=lambda box: box[1])  # Sort by y1 coordinate

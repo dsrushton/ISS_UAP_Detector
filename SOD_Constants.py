@@ -59,7 +59,7 @@ CROPPED_WIDTH = 1280 - CROP_LEFT - CROP_RIGHT  # = 939 pixels
 MIN_PIXEL_DIM = 6
 MIN_BRIGHTNESS = 15
 MAX_BRIGHTNESS = 240
-SAVE_INTERVAL = 2.0       # Minimum seconds between saves
+SAVE_INTERVAL = 1.0       # Minimum seconds between saves
 
 # Video Processing
 MAX_CONSECUTIVE_ERRORS = 30
@@ -68,6 +68,9 @@ BURST_CAPTURE_FRAMES = 100
 # Save Directory Structure
 DEFAULT_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/ISS_UAP_Detector/Detections/JPG"
 RAW_SUBDIR = "Burst_raw"
+
+# Test Image Path
+TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\sprites2.jpg"  # Known working path
 
 # Video Recording Settings
 BUFFER_SECONDS = 3
