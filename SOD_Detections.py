@@ -80,57 +80,70 @@ class SpaceObjectDetector:
     def _analyze_object(self, contour: np.ndarray, gray_frame: np.ndarray) -> tuple[bool, dict]:
         """Analyze if object passes detection criteria"""
         x, y, w, h = cv2.boundingRect(contour)
+        
+        # Skip tiny objects without printing
+        if w < 5 or h < 5:
+            return False, {}
+        
+        rect_area = w * h
+        contour_area = cv2.contourArea(contour)
+        
         metrics = {
-            'area': cv2.contourArea(contour),
+            'contour_area': contour_area,
+            'rect_area': rect_area,
             'aspect_ratio': float(w)/h if h != 0 else 0,
             'width': w,
             'height': h
         }
         
-        # STRICT SIZE REQUIREMENTS FIRST
-        # Minimum dimensions
-        if w < 5 or h < 5:  # Keep minimum size to avoid noise
+        # Debug print metrics only for objects >= 5x5
+        print(f"\nAnalyzing object:")
+        print(f"- Size: {w}x{h}")
+        print(f"- Rect Area: {rect_area}")
+        print(f"- Contour Area: {contour_area}")
+        print(f"- Area Ratio: {contour_area/rect_area if rect_area > 0 else 0}")
+        print(f"- Aspect ratio: {metrics['aspect_ratio']}")
+        
+        # Adjusted checks for elongated objects
+        if w > 100 or h > 100:  # Allow larger but not huge
+            print("Failed: Too large")
             return False, metrics
         
-        # Maximum dimensions    
-        if w > 60 or h > 60:  # Allow larger objects, but not huge
+        if contour_area < 12:  # Reduced minimum area
+            print("Failed: Area too small")
             return False, metrics
         
-        # Area check
-        if metrics['area'] < 16:  # Keep minimum area to avoid noise
+        # More lenient aspect ratio for elongated objects
+        if metrics['aspect_ratio'] > 8 or metrics['aspect_ratio'] < 0.125:  # Allow more elongated objects
+            print("Failed: Bad aspect ratio")
             return False, metrics
         
-        # Aspect ratio check - Allow elongated objects
-        if metrics['aspect_ratio'] > 4 or metrics['aspect_ratio'] < 0.25:  # More balanced ratio
-            return False, metrics
-        
-        # Brightness/contrast checks
+        # Get brightness metrics
         mask = np.zeros(gray_frame.shape, dtype=np.uint8)
         cv2.drawContours(mask, [contour], -1, 255, -1)
-        
         obj_brightness = cv2.mean(gray_frame, mask=mask)[0]
         
         kernel = np.ones((3,3), np.uint8)
         bg_mask = cv2.dilate(mask, kernel, iterations=2)
         bg_mask = cv2.bitwise_xor(bg_mask, mask)
         bg_brightness = cv2.mean(gray_frame, mask=bg_mask)[0]
-        
         contrast = obj_brightness - bg_brightness
         
-        metrics.update({
-            'obj_brightness': obj_brightness,
-            'bg_brightness': bg_brightness,
-            'contrast': contrast
-        })
+        print(f"- Brightness: {obj_brightness}")
+        print(f"- Background: {bg_brightness}")
+        print(f"- Contrast: {contrast}")
         
-        # Brightness checks
-        if not (12 < obj_brightness < 100):  # Keep brightness range
+        if not (12 < obj_brightness < 100):
+            print("Failed: Brightness out of range")
             return False, metrics
-        if bg_brightness > 40:  # Background must be dark
+        if bg_brightness > 40:
+            print("Failed: Background too bright")
             return False, metrics
-        if contrast < 12:  # Keep minimum contrast
+        if contrast < 12:
+            print("Failed: Insufficient contrast")
             return False, metrics
         
+        print("PASSED ALL CHECKS")
         return True, metrics
 
     def _detect_anomalies(self, frame: np.ndarray, space_box: tuple, iss_boxes: list = None, sun_boxes: list = None) -> tuple:
@@ -140,8 +153,11 @@ class SpaceObjectDetector:
         
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         
+        # Debug print ROI stats
+        print(f"\nAnalyzing space region: {roi.shape}")
+        
         # Create mask for dark regions (true space)
-        _, dark_mask = cv2.threshold(gray, 40, 255, cv2.THRESH_BINARY_INV)  # Only analyze pixels below 40 brightness
+        _, dark_mask = cv2.threshold(gray, 40, 255, cv2.THRESH_BINARY_INV)
         
         # Apply dark mask to gray image
         masked_gray = cv2.bitwise_and(gray, gray, mask=dark_mask)
@@ -151,6 +167,9 @@ class SpaceObjectDetector:
         
         _, thresh = cv2.threshold(diff, 10, 255, cv2.THRESH_BINARY)
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Debug print contours found
+        print(f"Found {len(contours)} potential objects")
         
         anomalies = []
         metadata = {'anomaly_metrics': []}
@@ -225,6 +244,7 @@ class SpaceObjectDetector:
             # Analyze object
             passes_analysis, metrics = self._analyze_object(contour, gray)
             if passes_analysis:
+                print(f"Object passed analysis: {metrics}")  # Debug metrics
                 anomalies.append((abs_x, abs_y, w, h))
                 metrics['position'] = (abs_x, abs_y, w, h)
                 metadata['anomaly_metrics'].append(metrics)
@@ -243,6 +263,9 @@ class SpaceObjectDetector:
         try:
             self.frame_count += 1
             
+            # Debug print frame dimensions
+            print(f"Processing frame with shape: {frame.shape}")
+            
             # Handle test frame injection
             if self.inject_test_frames > 0 and self.test_image is not None:
                 frame = self.test_image.copy()
@@ -260,6 +283,7 @@ class SpaceObjectDetector:
             # Run RCNN if needed
             if is_rcnn_frame:
                 self.last_rcnn_results = self._run_rcnn_detection(frame)
+                print(f"RCNN results: {self.last_rcnn_results['boxes'].keys()}")  # Debug boxes found
                 self.last_rcnn_frame = self.frame_count
                 metadata['rcnn_frame'] = True
             
@@ -281,6 +305,7 @@ class SpaceObjectDetector:
             anomalies = []
             space_box = None
             if not darkness_detected and 'space' in self.last_rcnn_results['boxes']:
+                print(f"Found space region")
                 for space_box in self.last_rcnn_results['boxes']['space']:
                     detected_anomalies, anomaly_metadata = self._detect_anomalies(
                         frame,
