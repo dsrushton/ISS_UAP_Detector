@@ -70,7 +70,9 @@ DEFAULT_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/ISS_UAP_Detector/De
 RAW_SUBDIR = "Burst_raw"
 
 # Test Image Path
-TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\sprites2.jpg"  # Known working path
+TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\sprites1.jpg"
+#TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\sprites2.jpg"
+#TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\bigmoney2.jpg"  # Known working path
 
 # Video Recording Settings
 BUFFER_SECONDS = 3

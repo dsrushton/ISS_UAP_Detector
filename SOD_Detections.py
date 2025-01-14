@@ -82,63 +82,59 @@ class SpaceObjectDetector:
 
     def _analyze_object(self, contour: np.ndarray, gray_frame: np.ndarray) -> tuple[bool, dict]:
         """Analyze if object passes detection criteria"""
-        try:
-            x, y, w, h = cv2.boundingRect(contour)
-            
-            # Skip tiny objects without printing
-            if w < 5 or h < 5:  # Minimum dimensions
-                return False, {}
-            
-            rect_area = w * h
-            contour_area = cv2.contourArea(contour)
-            
-            metrics = {
-                'contour_area': contour_area,
-                'rect_area': rect_area,
-                'aspect_ratio': float(w)/h if h != 0 else 0,
-                'width': w,
-                'height': h
-            }
-            
-            # Size and shape checks first
-            if w > 120 or h > 120:  # Max dimensions
-                return False, metrics
-            if contour_area < 16:  # Minimum area
-                return False, metrics
-            if metrics['aspect_ratio'] > 15 or metrics['aspect_ratio'] < 0.06:  # Aspect ratio
-                return False, metrics
-            
-            # Get brightness metrics
-            mask = np.zeros(gray_frame.shape, dtype=np.uint8)
-            cv2.drawContours(mask, [contour], -1, 255, -1)
-            obj_brightness = cv2.mean(gray_frame, mask=mask)[0]
-            
-            kernel = np.ones((3,3), np.uint8)
-            bg_mask = cv2.dilate(mask, kernel, iterations=2)
-            bg_mask = cv2.bitwise_xor(bg_mask, mask)
-            bg_brightness = cv2.mean(gray_frame, mask=bg_mask)[0]
-            contrast = obj_brightness - bg_brightness
-            
-            # Add brightness metrics to return value
-            metrics.update({
-                'obj_brightness': obj_brightness,
-                'bg_brightness': bg_brightness,
-                'contrast': contrast
-            })
-            
-            # Brightness checks
-            if not (12 < obj_brightness < 100):  # Brightness range
-                return False, metrics
-            if bg_brightness > 40:  # Background threshold
-                return False, metrics
-            if contrast < 12:  # Minimum contrast
-                return False, metrics
-            
-            return True, metrics
-            
-        except Exception as e:
-            print(f"Error in _analyze_object: {str(e)}")
-            return False, {}
+        x, y, w, h = cv2.boundingRect(contour)
+        metrics = {
+            'area': cv2.contourArea(contour),
+            'aspect_ratio': float(w)/h if h != 0 else 0,
+            'width': w,
+            'height': h
+        }
+        
+        # STRICT SIZE REQUIREMENTS FIRST
+        # Minimum dimensions
+        if w < 5 or h < 5:  # Keep minimum size to avoid noise
+            return False, metrics
+        
+        # Maximum dimensions    
+        if w > 120 or h > 120:  # Allow larger objects, but not huge
+            return False, metrics
+        
+        # Area check
+        if metrics['area'] < 16:  # Keep minimum area to avoid noise
+            return False, metrics
+        
+        # Aspect ratio check - Allow elongated objects
+        if metrics['aspect_ratio'] > 4 or metrics['aspect_ratio'] < 0.25:  # More balanced ratio
+            return False, metrics
+        
+        # Brightness/contrast checks
+        mask = np.zeros(gray_frame.shape, dtype=np.uint8)
+        cv2.drawContours(mask, [contour], -1, 255, -1)
+        
+        obj_brightness = cv2.mean(gray_frame, mask=mask)[0]
+        
+        kernel = np.ones((3,3), np.uint8)
+        bg_mask = cv2.dilate(mask, kernel, iterations=2)
+        bg_mask = cv2.bitwise_xor(bg_mask, mask)
+        bg_brightness = cv2.mean(gray_frame, mask=bg_mask)[0]
+        
+        contrast = obj_brightness - bg_brightness
+        
+        metrics.update({
+            'obj_brightness': obj_brightness,
+            'bg_brightness': bg_brightness,
+            'contrast': contrast
+        })
+        
+        # Brightness checks
+        if not (8 < obj_brightness < 240):  # Lower minimum brightness for faint objects
+            return False, metrics
+        if bg_brightness > 40:  # Background must be dark
+            return False, metrics
+        if contrast < 12:  # Lower contrast requirement for grey objects
+            return False, metrics
+        
+        return True, metrics
 
     def _detect_anomalies(self, frame: np.ndarray, space_box: tuple, iss_boxes: list = None, sun_boxes: list = None) -> tuple:
         """Find anomalies in space region"""
@@ -147,16 +143,18 @@ class SpaceObjectDetector:
         
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         
-        # Create mask for dark regions (true space)
-        _, dark_mask = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY_INV)
+        # Create mask for brightness range we care about (e.g. 40-150)
+        _, lower_mask = cv2.threshold(gray, 40, 255, cv2.THRESH_BINARY)  # Keep pixels > 40
+        _, upper_mask = cv2.threshold(gray, 210, 255, cv2.THRESH_BINARY_INV)  # Keep pixels < 150
         
-        # Apply dark mask to gray image
-        masked_gray = cv2.bitwise_and(gray, gray, mask=dark_mask)
+        # Combine masks to get our target brightness range
+        range_mask = cv2.bitwise_and(lower_mask, upper_mask)
         
-        background = cv2.GaussianBlur(masked_gray, (21, 21), 0)
-        diff = cv2.absdiff(masked_gray, background)
+        # Apply range mask to gray image
+        masked_gray = cv2.bitwise_and(gray, gray, mask=range_mask)
         
-        _, thresh = cv2.threshold(diff, 10, 255, cv2.THRESH_BINARY)
+        # Direct threshold on masked image
+        _, thresh = cv2.threshold(masked_gray, 10, 255, cv2.THRESH_BINARY)
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         anomalies = []
