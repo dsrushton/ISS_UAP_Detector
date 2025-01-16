@@ -40,7 +40,7 @@ CLASS_COLORS = {
 
 # Detection Thresholds
 CLASS_THRESHOLDS = {
-    'space': 0.75,
+    'space': 0.60,
     'earth': 0.75,
     'iss': 0.75,
     'lf': 0.75,
@@ -59,7 +59,7 @@ CROPPED_WIDTH = 1280 - CROP_LEFT - CROP_RIGHT  # = 939 pixels
 MIN_PIXEL_DIM = 6
 MIN_BRIGHTNESS = 15
 MAX_BRIGHTNESS = 240
-SAVE_INTERVAL = 1.0       # Minimum seconds between saves
+SAVE_INTERVAL = 1.0  # Seconds between jpg saves
 
 # Video Processing
 MAX_CONSECUTIVE_ERRORS = 30

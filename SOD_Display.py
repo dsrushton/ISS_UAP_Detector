@@ -46,21 +46,24 @@ class DisplayManager:
         
         # Draw anomaly boxes in red with transparency, shifted by x_offset
         if anomalies:
-            for x, y, w, h in anomalies:
+            for i, (ax, ay, aw, ah) in enumerate(anomalies):
                 # Draw shifted rectangle
                 cv2.rectangle(debug_view, 
-                            (x + x_offset, y), 
-                            (x + w + x_offset, y + h), 
+                            (ax + x_offset, ay), 
+                            (ax + aw + x_offset, ay + ah), 
                             (0, 0, 255), 2)  # Red color, thickness 2
                 
                 # Add metrics if available
                 if metadata and 'anomaly_metrics' in metadata:
-                    for metric in metadata['anomaly_metrics']:
-                        if metric['position'] == (x + x_offset, y, w, h):  # Need to adjust position check
-                            text = f"B:{metric['obj_brightness']:.1f} C:{metric['contrast']:.1f}"
-                            cv2.putText(debug_view, text, 
-                                      (x + x_offset, y - 5),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                    metrics = metadata['anomaly_metrics'][i]
+                    text = (f"B:{metrics['obj_brightness']:.1f} "
+                           f"C:{metrics['contrast']:.1f} "
+                           f"W:{metrics['width']} "
+                           f"H:{metrics['height']} "
+                           f"A:{metrics['area']}")
+                    cv2.putText(debug_view, text, 
+                              (ax + x_offset, ay - 5),  # Position above box
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
         
         # Blend overlay with original
         alpha = 0.3  # Transparency factor
@@ -159,13 +162,21 @@ class DisplayManager:
         return frame
 
     def draw_nofeed_overlay(self, frame: np.ndarray) -> np.ndarray:
-        """Draw NO FEED overlay on frame."""
+        """
+        Draw nofeed overlay on frame.
+        
+        Args:
+            frame: Input frame
+            
+        Returns:
+            Frame with nofeed overlay
+        """
         # Draw "NO FEED" text centered
         text = "NO FEED"
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 2.0
         thickness = 3
-        color = (128, 0, 128)  # Purple
+        color = (0, 0, 255)  # Red
         
         (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, thickness)
         text_x = (frame.shape[1] - text_width) // 2

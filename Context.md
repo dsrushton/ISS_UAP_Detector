@@ -144,3 +144,31 @@ Primary usage is monitoring ISS live feed, with:
 - Ensuring proper handling of the 3-second buffer and 2-second post-detection recording
 - Fixing issues with burst captures and raw frame saving
 - Addressing initialization problems in CaptureManager
+
+## Detection Priorities
+- Primary focus is detecting solid objects within RCNN-identified 'space' regions
+- Multiple validation layers prevent false positives:
+  1. RCNN identifies broad regions and known objects
+  2. Contour detection finds potential anomalies
+  3. Strict brightness/contrast analysis filters prosaic artifacts
+  4. Cross-reference with known object locations (ISS, panels, etc.)
+
+## Lens Flare Handling
+- Critical for maintaining detection quality
+- Three-tiered approach:
+  1. Single/dual lens flares: Continue detection but filter overlapping regions
+  2. Three+ lens flares: Pause detection for 10 seconds (too much visual noise)
+  3. Track consecutive lens flare frames to prevent false positives
+
+## Detection Thresholds
+- Must preserve established values:
+  - Darkness threshold: 40% frame area
+  - Minimum contrast: 7 units
+  - Object brightness: 12-240 range
+  - Background brightness: < 35
+
+## System Integrity
+- Critical to maintain all detection features
+- No arbitrary removal of established checks
+- Preserve both permissive initial detection and strict filtering
+- Keep all metadata for analysis and debugging

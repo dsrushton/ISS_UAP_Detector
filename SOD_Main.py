@@ -8,6 +8,7 @@ import threading
 import time
 import os
 from typing import Optional
+import numpy as np
 
 from SOD_Constants import (
     MAX_CONSECUTIVE_ERRORS, 
@@ -40,8 +41,9 @@ class SpaceObjectDetectionSystem:
         self.burst_remaining: int = 0
         self.is_running: bool = False
         
-        # Test frame injection
-        self.test_image = None
+        # Test image state
+        self.test_images = []
+        self.current_test_image = 0
         self.inject_test_frames = 0
         
         self.video = VideoManager()
@@ -64,23 +66,14 @@ class SpaceObjectDetectionSystem:
                 print("Failed to initialize capture system")
                 return False
                 
-            # Load test image
-            if not self.detector.load_test_image(TEST_IMAGE_PATH):
-                print(f"Warning: Could not load test image from {TEST_IMAGE_PATH}")
-                
+            # Load test images
+            if not self.load_test_images():
+                print("Warning: Could not load test images")
+            
             return True
             
         except Exception as e:
             print(f"Error during initialization: {str(e)}")
-            return False
-
-    def load_test_image(self, path: str) -> bool:
-        """Load test image for injection."""
-        try:
-            self.test_image = cv2.imread(path)
-            return self.test_image is not None
-        except Exception as e:
-            print(f"Error loading test image: {e}")
             return False
 
     def process_frame(self, frame) -> Optional[bool]:
@@ -95,12 +88,13 @@ class SpaceObjectDetectionSystem:
         """
         try:
             # Handle test frame injection
-            if self.inject_test_frames > 0 and self.test_image is not None:
-                frame = self.test_image.copy()
+            if self.inject_test_frames > 0 and self.test_images:
+                frame = self.test_images[self.current_test_image].copy()
                 print(f"\nTest frame {self.inject_test_frames}/10")
                 self.inject_test_frames -= 1
-            else:
-                # Crop frame from live feed (test frame is already 939x720)
+            
+            # Crop frame if needed
+            if frame.shape[1] != CROPPED_WIDTH:
                 frame = crop_frame(frame)
             
             # Add frame to buffer
@@ -120,28 +114,20 @@ class SpaceObjectDetectionSystem:
                 x1, y1, x2, y2 = predictions.space_box
                 space_roi = frame[y1:y2, x1:x2]
                 
-                # Get contours from space region
-                gray = cv2.cvtColor(space_roi, cv2.COLOR_BGR2GRAY)
-                background = cv2.GaussianBlur(gray, (21, 21), 0)
-                diff = cv2.absdiff(gray, background)
-                _, thresh = cv2.threshold(diff, 10, 255, cv2.THRESH_BINARY)
-                contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
                 # Convert anomaly coordinates to ROI space
                 roi_anomalies = []
                 if predictions.anomalies:
                     for ax, ay, aw, ah in predictions.anomalies:
-                        # Convert to ROI coordinates
                         roi_x = ax - x1
                         roi_y = ay - y1
                         roi_anomalies.append((roi_x, roi_y, aw, ah))
                 
-                # Create debug view with ROI-space anomalies
+                # Create debug view with ROI-space anomalies and metadata
                 debug_view = self.display.create_debug_view(
                     space_roi, 
-                    contours,
+                    predictions.contours if hasattr(predictions, 'contours') else [],
                     roi_anomalies if roi_anomalies else None,
-                    predictions.metadata
+                    predictions.metadata  # Pass the metadata through
                 )
                 if debug_view is not None:
                     cv2.imshow('Space Debug View', debug_view)
@@ -171,20 +157,13 @@ class SpaceObjectDetectionSystem:
                 # Update ongoing video recording
                 self.video.update_recording(annotated_frame, False, debug_view)
             
-            # Increment frame counter
-            self.frame_count += 1
-            
             # Handle user input
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 return False
             elif key == ord('f'):
                 print("\nStarting test image injection!")
-                self.inject_test_frames = 10
-                # Load test image if not already loaded
-                if self.test_image is None:
-                    if not self.load_test_image(TEST_IMAGE_PATH):
-                        print(f"Failed to load test image from {TEST_IMAGE_PATH}")
+                self.start_test_injection(10)
             elif key == ord(' '):
                 print("\nStarting 100 frame burst save to raw directory!")
                 self.burst_remaining = BURST_CAPTURE_FRAMES
@@ -344,6 +323,43 @@ class SpaceObjectDetectionSystem:
         finally:
             cap.release()
             cv2.destroyAllWindows()
+
+    def load_test_images(self) -> bool:
+        """Load all test images."""
+        try:
+            test_paths = [
+                r"C:\Users\dsrus\OneDrive\Pictures\sprites1.jpg",
+                r"C:\Users\dsrus\OneDrive\Pictures\sprites2.jpg",
+                r"C:\Users\dsrus\OneDrive\Pictures\bigmoney2.jpg"
+            ]
+            
+            self.test_images = []
+            for path in test_paths:
+                img = cv2.imread(path)
+                if img is not None:
+                    img = cv2.resize(img, (1280, 720))
+                    self.test_images.append(img)
+                    print(f"Loaded test image: {path}")
+                else:
+                    print(f"Failed to load: {path}")
+            
+            return len(self.test_images) > 0
+            
+        except Exception as e:
+            print(f"Error loading test images: {e}")
+            return False
+
+    def start_test_injection(self, frames: int = 10) -> None:
+        """Start test frame injection."""
+        if self.test_images:
+            self.inject_test_frames = frames
+            print(f"\nStarting {frames} frame test injection with image {self.current_test_image + 1}/3")
+            self.current_test_image = (self.current_test_image + 1) % len(self.test_images)
+        else:
+            if self.load_test_images():
+                self.start_test_injection(frames)
+            else:
+                print("No test images available")
 
 def main():
     """Main entry point for the Space Object Detection system."""

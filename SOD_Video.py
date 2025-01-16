@@ -10,7 +10,7 @@ from SOD_Constants import (
     BUFFER_SECONDS, POST_DETECTION_SECONDS, 
     VIDEO_FPS, VIDEO_SAVE_DIR, CROPPED_WIDTH
 )
-from SOD_Utils import crop_frame
+from SOD_Utils import crop_frame, get_best_stream_url
 
 class VideoManager:
     """Manages video buffering and recording."""
@@ -168,14 +168,14 @@ class VideoManager:
             logging.error(f"Error getting frame: {e}")
             return False, None 
     
-    def reinitialize_source(self) -> bool:
+    def reinitialize_source(self, source: str) -> bool:
         """Try to reinitialize video source after connection loss."""
         try:
             if self.cap is not None:
                 self.cap.release()
             
             # Get fresh stream URL
-            stream_url = get_best_stream_url()
+            stream_url = get_best_stream_url(source)
             if not stream_url:
                 return False
             
