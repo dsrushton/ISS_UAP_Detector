@@ -138,11 +138,11 @@ Primary usage is monitoring ISS live feed, with:
 - Preserve debug visualization capabilities
 - Consider buffer size vs memory usage
 
-## Current Status
+Fixed Issues:
 - Working on improving detection accuracy and visualization
-- Implementing changes to save both video (.avi) and image (.jpg) captures
-- Ensuring proper handling of the 3-second buffer and 2-second post-detection recording
-- Fixing issues with burst captures and raw frame saving
+- Implemented changes to save both video (.avi) and image (.jpg) captures
+- Ensured proper handling of the 3-second buffer and 2-second post-detection recording
+- Fixed issues with burst captures and raw frame saving
 - Addressing initialization problems in CaptureManager
 
 ## Detection Priorities
@@ -172,3 +172,9 @@ Primary usage is monitoring ISS live feed, with:
 - No arbitrary removal of established checks
 - Preserve both permissive initial detection and strict filtering
 - Keep all metadata for analysis and debugging
+- Maintain synchronized file naming and organization
+
+## Current Status:
+Continuing to refine detection algorithms for best captures
+Hunting down bugs and inefficiency
+

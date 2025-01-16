@@ -56,17 +56,17 @@ CROP_RIGHT = 176   # Pixels to crop from right
 CROPPED_WIDTH = 1280 - CROP_LEFT - CROP_RIGHT  # = 939 pixels
 
 # Anomaly Detection Parameters
-MIN_PIXEL_DIM = 6
-MIN_BRIGHTNESS = 15
+MIN_PIXEL_DIM = 10
+MIN_BRIGHTNESS = 12
 MAX_BRIGHTNESS = 240
-SAVE_INTERVAL = 1.0  # Seconds between jpg saves
+SAVE_INTERVAL = 1.0  # Seconds between saves
 
 # Video Processing
 MAX_CONSECUTIVE_ERRORS = 30
 BURST_CAPTURE_FRAMES = 100
 
 # Save Directory Structure
-DEFAULT_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/ISS_UAP_Detector/Detections/JPG"
+JPG_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/ISS_UAP_Detector/Detections/JPG"
 RAW_SUBDIR = "Burst_raw"
 
 # Test Image Path
@@ -79,3 +79,28 @@ BUFFER_SECONDS = 3
 POST_DETECTION_SECONDS = 2
 VIDEO_FPS = 30
 VIDEO_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/ISS_UAP_Detector/Detections/AVI"
+
+# Detection Parameters
+MAX_BG_BRIGHTNESS = 35
+MIN_CONTRAST = 6
+MIN_CONTOUR_WIDTH = 5
+MIN_CONTOUR_HEIGHT = 5
+MAX_CONTOUR_WIDTH = 120
+MAX_CONTOUR_HEIGHT = 120
+MIN_CONTOUR_AREA = 25
+MAX_ASPECT_RATIO = 8.0
+
+# RCNN Parameters
+MAX_RCNN_BOXES = 10
+DARKNESS_AREA_THRESHOLD = 0.4
+RCNN_DETECTION_CYCLE = 10
+
+# Display Parameters
+DEBUG_VIEW_ENABLED = True
+CONTOUR_COLOR = (0, 255, 0)  # Green
+ANOMALY_BOX_COLOR = (0, 0, 255)  # Red
+NOFEED_TEXT_COLOR = (128, 0, 128)  # Purple
+DARKNESS_OVERLAY_COLOR = (0, 0, 0)  # Black
+
+# Save Parameters
+RECONNECT_DELAY = 5.0  # Seconds to wait before reconnecting

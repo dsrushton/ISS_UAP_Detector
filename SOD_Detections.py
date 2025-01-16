@@ -15,7 +15,10 @@ import time
 
 from SOD_Constants import (
     DEVICE, MODEL_PATH, CLASS_NAMES, CLASS_THRESHOLDS,
-    MIN_BRIGHTNESS, MAX_BRIGHTNESS, MIN_PIXEL_DIM, CROPPED_WIDTH
+    MIN_BRIGHTNESS, MAX_BRIGHTNESS, MIN_PIXEL_DIM, CROPPED_WIDTH,
+    RCNN_DETECTION_CYCLE, MIN_CONTOUR_WIDTH, MIN_CONTOUR_HEIGHT,
+    MAX_CONTOUR_WIDTH, MAX_CONTOUR_HEIGHT, MIN_CONTOUR_AREA,
+    MAX_ASPECT_RATIO, MAX_BG_BRIGHTNESS, MIN_CONTRAST
 )
 
 @dataclass
@@ -52,7 +55,7 @@ class DetectionResults:
 class SpaceObjectDetector:
     """Handles object detection using RCNN and first principles analysis."""
     
-    def __init__(self, rcnn_cycle: int = 10):
+    def __init__(self, rcnn_cycle: int = RCNN_DETECTION_CYCLE):
         """Initialize detector with frame cycle for RCNN."""
         self.model = None
         self.transform = None
@@ -78,148 +81,121 @@ class SpaceObjectDetector:
         self.consecutive_lf = 0
         self.lf_pause_until = 0  # Track when to resume after lens flares
 
-    def analyze_object(self, contour: np.ndarray, gray_frame: np.ndarray, binary_mask: np.ndarray) -> tuple[bool, dict]:
+    def analyze_object(self, gray_frame: np.ndarray, binary_mask: np.ndarray, w: int, h: int) -> bool:
         """Analyze if object passes detection criteria"""
-        x, y, w, h = cv2.boundingRect(contour)
-        metrics = {
-            'area': cv2.contourArea(contour),
-            'aspect_ratio': float(w)/h if h != 0 else 0,
-            'width': w,
-            'height': h
-        }
-        
         # STRICT SIZE REQUIREMENTS FIRST
         # Minimum dimensions
-        if max(w, h) < 4:  # Increased from 5 to 6
-            return False, metrics
+        if w < MIN_CONTOUR_WIDTH or h < MIN_CONTOUR_HEIGHT:
+            return False
         
         # Maximum dimensions    
-        if w > 120 or h > 120:  # Keep max size the same
-            return False, metrics
+        if w > MAX_CONTOUR_WIDTH or h > MAX_CONTOUR_HEIGHT:
+            return False
         
         # Area check - much more permissive for elongated objects
         aspect = max(w, h) / min(w, h)
-        min_area = 8 if aspect > 3 else 12  # Increased from 8/12 to 12/16
-        if metrics['area'] < min_area:
-            return False, metrics
-        
-        # Aspect ratio check - Allow very elongated objects
-        if metrics['aspect_ratio'] > 8 or metrics['aspect_ratio'] < 0.125:  # Keep same ratio
-            return False, metrics
+        min_area = MIN_CONTOUR_AREA if aspect > 3 else MIN_CONTOUR_AREA * 1.5
         
         # Use the binary mask for exact object boundaries
-        mask = np.zeros(binary_mask.shape, dtype=np.uint8)
-        cv2.drawContours(mask, [contour], -1, 255, -1)
+        obj_pixels = cv2.bitwise_and(gray_frame, gray_frame, mask=binary_mask)
+        area = np.count_nonzero(binary_mask)
+        if area < min_area:
+            return False
+        
+        # Aspect ratio check - Allow very elongated objects
+        if aspect > MAX_ASPECT_RATIO or aspect < (1.0 / MAX_ASPECT_RATIO):
+            return False
         
         # Get brightness using exact binary mask boundaries
-        obj_brightness = cv2.mean(gray_frame, mask=mask)[0]
+        masked_pixels = obj_pixels[binary_mask > 0]
+        if len(masked_pixels) == 0:
+            return False
+        obj_brightness = float(np.mean(masked_pixels))
         
         # Get background from dilated region outside mask
         kernel = np.ones((3,3), np.uint8)
-        bg_mask = cv2.dilate(mask, kernel, iterations=2)
-        bg_mask = cv2.bitwise_xor(bg_mask, mask)
-        bg_brightness = cv2.mean(gray_frame, mask=bg_mask)[0]
+        bg_mask = cv2.dilate(binary_mask, kernel, iterations=2)
+        bg_mask = cv2.bitwise_xor(bg_mask, binary_mask)
+        bg_pixels = cv2.bitwise_and(gray_frame, gray_frame, mask=bg_mask)
         
-        contrast = obj_brightness - bg_brightness
+        # Check if we have valid background pixels
+        masked_bg = bg_pixels[bg_mask > 0]
+        if len(masked_bg) == 0:
+            return False
+        bg_brightness = float(np.mean(masked_bg))
         
-        metrics.update({
-            'obj_brightness': obj_brightness,
-            'bg_brightness': bg_brightness,
-            'contrast': contrast
-        })
+        contrast = abs(obj_brightness - bg_brightness)
         
-        # Brightness checks - Expanded ranges based on empirical data
-        if not (12 < obj_brightness < 240):  # Increased minimum from 8 to 12
-            return False, metrics
-        if bg_brightness > 35:  # More permissive background (increased from 25 to 35)
-            return False, metrics
-        if contrast < 6:  # Keep same contrast requirement
-            return False, metrics
+        # Brightness checks - Using constants
+        if not (MIN_BRIGHTNESS < obj_brightness < MAX_BRIGHTNESS):
+            return False
+        if bg_brightness > MAX_BG_BRIGHTNESS:
+            return False
+        if contrast < MIN_CONTRAST:
+            return False
         
-        return True, metrics
+        return True
 
     def detect_anomalies(self, frame: np.ndarray, space_box: tuple) -> DetectionResults:
-        """Detect anomalies in the space region of a frame."""
         results = DetectionResults()
-        results.space_box = space_box
-        
-        # Copy RCNN results from last detection
-        results.rcnn_boxes = self.last_rcnn_results['boxes']
-        results.rcnn_scores = self.last_rcnn_results['scores']
-        
-        if space_box is None:
-            return results
-            
-        # Extract space region
         x1, y1, x2, y2 = space_box
         roi = frame[y1:y2, x1:x2]
         
-        # Convert to grayscale and preprocess
+        # Convert ROI to grayscale and apply Gaussian blur
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         
-        # Create masks for brightness "pocket"
-        _, lower_mask = cv2.threshold(gray, 15, 255, cv2.THRESH_BINARY)
-        _, upper_mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
-        pocket_mask = cv2.bitwise_and(lower_mask, upper_mask)
+        # Create masks for brightness detection
+        _, lower_mask = cv2.threshold(blurred, 15, 255, cv2.THRESH_BINARY)
+        _, upper_mask = cv2.threshold(blurred, 240, 255, cv2.THRESH_BINARY_INV)
+        mask = cv2.bitwise_and(lower_mask, upper_mask)
         
-        # Clean up the mask
-        kernel = np.ones((2,2), np.uint8)
-        cleaned = cv2.morphologyEx(pocket_mask, cv2.MORPH_OPEN, kernel)
-        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
+        # Clean up mask
+        kernel = np.ones((3,3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         
         # Find contours
-        contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        results.contours = contours
         
-        # Limit number of contours to process
-        MAX_CONTOURS = 10  # Maximum number of contours to process
-        if len(contours) > MAX_CONTOURS:
-            # Sort contours by area and keep the largest ones
-            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:MAX_CONTOURS]
-            results.metadata['contours_limited'] = True
+        # Limit number of contours processed
+        if len(contours) > 10:
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:10]
+            results.metadata['max_contours_reached'] = True
         
-        results.contours = contours  # Store contours for debug view
-        
-        # Store metrics for valid anomalies
         anomalies = []
         anomaly_metrics = []
         valid_detections = 0
-        MAX_DETECTIONS = 5  # Maximum number of valid detections to allow
         
+        # Process each contour
         for contour in contours:
-            if valid_detections >= MAX_DETECTIONS:
-                results.metadata['detections_limited'] = True
+            # Skip if we've already found 5 valid detections
+            if valid_detections >= 5:
                 break
-                
-            # Call analyze_object first
-            is_valid, metrics = self.analyze_object(contour, gray, pocket_mask)
-            if not is_valid:
-                continue
-                
+            
+            # Get contour properties
             x, y, w, h = cv2.boundingRect(contour)
             
             # Create binary mask for exact object boundaries
             obj_mask = np.zeros_like(gray)
             cv2.drawContours(obj_mask, [contour], -1, 255, -1)
             
-            # Analyze object properties
-            obj_pixels = gray[obj_mask == 255]
-            bg_pixels = gray[obj_mask == 0]
-            
-            if len(obj_pixels) == 0 or len(bg_pixels) == 0:
+            # Only proceed if analyze_object approves this contour
+            if not self.analyze_object(gray, obj_mask, w, h):
                 continue
-                
-            obj_brightness = np.mean(obj_pixels)
-            bg_brightness = np.mean(bg_pixels)
+            
+            # Calculate metrics for display
+            obj_pixels = cv2.bitwise_and(gray, gray, mask=obj_mask)
+            obj_brightness = np.mean(obj_pixels[obj_mask > 0])
+            
+            # Calculate background brightness from dilated region outside mask
+            bg_mask = cv2.dilate(obj_mask, kernel, iterations=2)
+            bg_mask = cv2.bitwise_xor(bg_mask, obj_mask)
+            bg_pixels = cv2.bitwise_and(gray, gray, mask=bg_mask)
+            bg_brightness = np.mean(bg_pixels[bg_mask > 0])
+            
             contrast = abs(obj_brightness - bg_brightness)
-            
-            # Skip if object doesn't meet criteria
-            if not (12 < obj_brightness < 240):
-                continue
-            if bg_brightness > 35:
-                continue
-            if contrast < 6:
-                continue
             
             # Store metrics for this anomaly
             metrics = {
@@ -231,12 +207,11 @@ class SpaceObjectDetector:
                 'height': h,
                 'area': w * h
             }
-            print(f"Debug - Anomaly metrics: {metrics}")
             
             anomalies.append((x + x1, y + y1, w, h))
             anomaly_metrics.append(metrics)
             valid_detections += 1
-            
+        
         # Store results - preserve any existing metadata
         if 'anomaly_metrics' not in results.metadata:
             results.metadata['anomaly_metrics'] = []
