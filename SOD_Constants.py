@@ -69,7 +69,7 @@ RAW_SUBDIR = "Burst_raw"
 #TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\sprites2.jpg"
 #TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\bigmoney2.jpg"  # Known working path
  # Better Tests
-#TEST_IMAGE_PATH = r"C:\Users\dsrus\Desktop\Workspace\MTLiens\SpaceObjectDetector\Detections\JPG\000512.jpg"
+TEST_IMAGE_PATH = r"C:\Users\dsrus\Desktop\Workspace\MTLiens\SpaceObjectDetector\Detections\JPG\000512.jpg"
 #TEST_IMAGE_PATH = r"C:\Users\dsrus\Desktop\Workspace\MTLiens\SpaceObjectDetector\Detections\JPG\001641.jpg"
 #TEST_IMAGE_PATH = r"C:\Users\dsrus\Desktop\Workspace\MTLiens\SpaceObjectDetector\Detections\JPG\001469.jpg"
 #TEST_IMAGE_PATH = r"C:\Users\dsrus\Desktop\Workspace\MTLiens\SpaceObjectDetector\Detections\AVI\JPG\00195-a.jpg"
