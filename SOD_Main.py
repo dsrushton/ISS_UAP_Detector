@@ -127,7 +127,7 @@ class SpaceObjectDetectionSystem:
             # Handle video recording
             if detections.anomalies and not self.video.recording:
                 # Start new recording
-                frame_size = frame.shape[1::-1] if debug_view is None else (
+                frame_size = (frame.shape[1], frame.shape[0]) if debug_view is None else (
                     frame.shape[1] + debug_view.shape[1],
                     max(frame.shape[0], debug_view.shape[0])
                 )
@@ -136,7 +136,7 @@ class SpaceObjectDetectionSystem:
                     # Start tracking this video number for JPGs
                     self.capture.start_new_video(self.video.current_video_number)
                     # Save first detection frame without interval check
-                    self.capture.save_detection(frame, debug_view, check_interval=False)
+                    self.capture.save_detection(annotated_frame, debug_view, check_interval=False)
             
             # Update recording if active
             if self.video.recording:
@@ -147,14 +147,14 @@ class SpaceObjectDetectionSystem:
                     combined = np.zeros((max(h, debug_h), w + debug_w, 3), dtype=np.uint8)
                     # Put debug view on left, main frame on right
                     combined[:debug_h, :debug_w] = debug_view
-                    combined[:h, debug_w:] = frame
+                    combined[:h, debug_w:] = annotated_frame
                     self.video.update_recording(combined, detections.anomalies)
                     
                     # Save new detection frame if anomaly detected
                     if detections.anomalies:
-                        self.capture.save_detection(frame, debug_view)
+                        self.capture.save_detection(annotated_frame, debug_view)
                 else:
-                    self.video.update_recording(frame, detections.anomalies)
+                    self.video.update_recording(annotated_frame, detections.anomalies)
             
             # Handle burst capture
             if self.burst_remaining > 0:
@@ -366,7 +366,10 @@ class SpaceObjectDetectionSystem:
             self.test_images = []
             img = cv2.imread(TEST_IMAGE_PATH)
             if img is not None:
-                img = cv2.resize(img, (1280, 720))
+                # Get rightmost 939x720 pixels
+                h, w = img.shape[:2]
+                x1 = max(0, w - 939)  # Start x coordinate for cropping
+                img = img[:720, x1:]  # Crop to 939x720 from the right
                 self.test_images.append(img)
                 print(f"Loaded test image: {TEST_IMAGE_PATH}")
                 return True

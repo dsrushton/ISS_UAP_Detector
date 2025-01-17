@@ -43,7 +43,7 @@ CLASS_THRESHOLDS = {
     'space': 0.60,
     'earth': 0.75,
     'iss': 0.75,
-    'lf': 0.75,
+    'lf': 0.99,
     'td': 0.50,
     'sun': 0.75,
     'nofeed': 0.25,
@@ -55,11 +55,6 @@ CROP_LEFT = 165    # Pixels to crop from left
 CROP_RIGHT = 176   # Pixels to crop from right
 CROPPED_WIDTH = 1280 - CROP_LEFT - CROP_RIGHT  # = 939 pixels
 
-# Anomaly Detection Parameters
-MIN_PIXEL_DIM = 10
-MIN_BRIGHTNESS = 12
-MAX_BRIGHTNESS = 240
-SAVE_INTERVAL = 1.0  # Seconds between saves
 
 # Video Processing
 MAX_CONSECUTIVE_ERRORS = 30
@@ -69,16 +64,26 @@ BURST_CAPTURE_FRAMES = 100
 JPG_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/ISS_UAP_Detector/Detections/JPG"
 RAW_SUBDIR = "Burst_raw"
 
-# Test Image Path
-TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\sprites1.jpg"
+ # Test Image Paths
+#TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\sprites1.jpg"
 #TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\sprites2.jpg"
 #TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\bigmoney2.jpg"  # Known working path
+ # Better Tests
+#TEST_IMAGE_PATH = r"C:\Users\dsrus\Desktop\Workspace\MTLiens\SpaceObjectDetector\Detections\JPG\000512.jpg"
+#TEST_IMAGE_PATH = r"C:\Users\dsrus\Desktop\Workspace\MTLiens\SpaceObjectDetector\Detections\JPG\001641.jpg"
+#TEST_IMAGE_PATH = r"C:\Users\dsrus\Desktop\Workspace\MTLiens\SpaceObjectDetector\Detections\JPG\001469.jpg"
+#TEST_IMAGE_PATH = r"C:\Users\dsrus\Desktop\Workspace\MTLiens\SpaceObjectDetector\Detections\AVI\JPG\00195-a.jpg"
 
 # Video Recording Settings
 BUFFER_SECONDS = 3
-POST_DETECTION_SECONDS = 2
+POST_DETECTION_SECONDS = 2.1
 VIDEO_FPS = 30
 VIDEO_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/ISS_UAP_Detector/Detections/AVI"
+
+# Anomaly Detection Parameters
+MIN_BRIGHTNESS = 12
+MAX_BRIGHTNESS = 200
+SAVE_INTERVAL = 2.0  # Seconds between saves
 
 # Detection Parameters
 MAX_BG_BRIGHTNESS = 35
@@ -92,8 +97,9 @@ MAX_ASPECT_RATIO = 8.0
 
 # RCNN Parameters
 MAX_RCNN_BOXES = 10
-DARKNESS_AREA_THRESHOLD = 0.4
-RCNN_DETECTION_CYCLE = 10
+DARKNESS_AREA_THRESHOLD = 0.25 #Total darkness area threshold
+RCNN_DETECTION_CYCLE = 10 #Frame interval for RCNN detection
+MAX_LENS_FLARES = 3  # Maximum number of lens flares before skipping contour detection
 
 # Display Parameters
 DEBUG_VIEW_ENABLED = True

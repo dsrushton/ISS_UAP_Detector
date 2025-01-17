@@ -18,7 +18,7 @@ from SOD_Constants import (
     MIN_BRIGHTNESS, MAX_BRIGHTNESS, MIN_PIXEL_DIM, CROPPED_WIDTH,
     RCNN_DETECTION_CYCLE, MIN_CONTOUR_WIDTH, MIN_CONTOUR_HEIGHT,
     MAX_CONTOUR_WIDTH, MAX_CONTOUR_HEIGHT, MIN_CONTOUR_AREA,
-    MAX_ASPECT_RATIO, MAX_BG_BRIGHTNESS, MIN_CONTRAST
+    MAX_ASPECT_RATIO, MAX_BG_BRIGHTNESS, MIN_CONTRAST, MAX_LENS_FLARES
 )
 
 @dataclass
@@ -168,14 +168,25 @@ class SpaceObjectDetector:
         anomaly_metrics = []
         valid_detections = 0
         
+        # Get frame dimensions for border check
+        frame_height, frame_width = roi.shape[:2]
+        BORDER_MARGIN = 5  # How many pixels from border to consider "touching"
+        
         # Process each contour
         for contour in contours:
-            # Skip if we've already found 5 valid detections
-            if valid_detections >= 5:
+            # Skip if we've already found 4 valid detections
+            if valid_detections >= 4:
                 break
             
             # Get contour properties
             x, y, w, h = cv2.boundingRect(contour)
+            
+            # Check if detection touches frame border
+            if (x <= BORDER_MARGIN or 
+                y <= BORDER_MARGIN or 
+                x + w >= frame_width - BORDER_MARGIN or 
+                y + h >= frame_height - BORDER_MARGIN):
+                continue
             
             # Create binary mask for exact object boundaries
             obj_mask = np.zeros_like(gray)
@@ -259,7 +270,7 @@ class SpaceObjectDetector:
             skip_contour_detection = False
             if 'lf' in self.last_rcnn_results['boxes']:
                 lf_count = len(self.last_rcnn_results['boxes']['lf'])
-                if lf_count >= 3:
+                if lf_count >= MAX_LENS_FLARES:
                     skip_contour_detection = True
                     results.metadata['skipped_contours_lf'] = True
             
@@ -267,24 +278,49 @@ class SpaceObjectDetector:
             if 'space' in results.rcnn_boxes and not skip_contour_detection:
                 space_boxes = sorted(results.rcnn_boxes['space'], 
                                   key=lambda box: box[1])  # Sort by y1 coordinate
-                space_box = space_boxes[0]  # Use highest space box
                 
-                # Get lens flare boxes if present (2 or fewer)
-                lf_boxes = []
-                if 'lf' in results.rcnn_boxes:
-                    lf_count = len(self.last_rcnn_results['boxes']['lf'])
-                    if lf_count <= 2:
-                        lf_boxes = results.rcnn_boxes['lf']
+                # Store the highest box for display purposes
+                results.space_box = space_boxes[0]
                 
-                # Run anomaly detection
-                anomaly_results = self.detect_anomalies(frame, space_box)
+                # Track all anomalies across all space boxes
+                all_anomalies = []
+                all_metrics = []
+                all_contours = []
+                seen_positions = set()  # Track positions to avoid duplicate detections
+                
+                # Process each space box
+                for space_box in space_boxes:
+                    # Run anomaly detection on this box
+                    box_results = self.detect_anomalies(frame, space_box)
+                    
+                    # Check each anomaly to avoid duplicates (if boxes overlap)
+                    for i, (x, y, w, h) in enumerate(box_results.anomalies):
+                        # Create a position key (using center point)
+                        pos_key = (x + w//2, y + h//2)
+                        
+                        # Skip if we've seen a detection at this position
+                        if pos_key in seen_positions:
+                            continue
+                            
+                        seen_positions.add(pos_key)
+                        all_anomalies.append((x, y, w, h))
+                        
+                        if 'anomaly_metrics' in box_results.metadata:
+                            all_metrics.append(box_results.metadata['anomaly_metrics'][i])
+                    
+                    # Store contours only from the top box for display
+                    if np.array_equal(space_box, results.space_box):
+                        all_contours = box_results.contours
+                
+                # Get lens flare boxes for filtering
+                lf_boxes = self.last_rcnn_results['boxes'].get('lf', [])
                 
                 # If we have lens flare boxes, filter anomalies that overlap with them
-                if lf_boxes and anomaly_results.anomalies:
+                if lf_boxes and all_anomalies:
                     filtered_anomalies = []
                     filtered_metrics = []
                     
-                    for i, (ax, ay, aw, ah) in enumerate(anomaly_results.anomalies):
+                    for i, (ax, ay, aw, ah) in enumerate(all_anomalies):
                         overlaps_lf = False
                         for lf_box in lf_boxes:
                             # Check for overlap
@@ -296,19 +332,19 @@ class SpaceObjectDetector:
                         
                         if not overlaps_lf:
                             filtered_anomalies.append((ax, ay, aw, ah))
-                            if 'anomaly_metrics' in anomaly_results.metadata:
-                                filtered_metrics.append(anomaly_results.metadata['anomaly_metrics'][i])
+                            if len(all_metrics) > i:
+                                filtered_metrics.append(all_metrics[i])
                     
-                    # Update results with filtered anomalies
-                    anomaly_results.anomalies = filtered_anomalies
-                    if 'anomaly_metrics' in anomaly_results.metadata:
-                        anomaly_results.metadata['anomaly_metrics'] = filtered_metrics
+                    # Update anomalies and metrics after filtering
+                    all_anomalies = filtered_anomalies
+                    all_metrics = filtered_metrics
                 
-                # Update results
-                results.anomalies = anomaly_results.anomalies
-                results.contours = anomaly_results.contours
-                results.metadata.update(anomaly_results.metadata)
-                results.space_box = space_box
+                # Update final results
+                results.anomalies = all_anomalies
+                results.contours = all_contours
+                if all_metrics:
+                    results.metadata['anomaly_metrics'] = all_metrics
+                results.metadata['total_space_boxes'] = len(space_boxes)
             
             return results
             

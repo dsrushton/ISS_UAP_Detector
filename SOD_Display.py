@@ -76,11 +76,6 @@ class DisplayManager:
         alpha = 0.7
         cv2.addWeighted(debug_view, alpha, overlay, 1 - alpha, 0, debug_view)
         
-        # Add "Debug View" text
-        cv2.putText(debug_view, "Debug View", 
-                    (10, 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        
         return debug_view
 
     def draw_detections(self, frame: np.ndarray, detections: DetectionResults) -> np.ndarray:
