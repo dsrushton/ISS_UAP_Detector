@@ -12,14 +12,18 @@ import numpy as np
 from typing import Optional, Tuple
 import json
 
-from SOD_Constants import DEFAULT_SAVE_DIR, RAW_SUBDIR, SAVE_INTERVAL
+from SOD_Constants import (
+    JPG_SAVE_DIR,
+    RAW_SUBDIR,
+    SAVE_INTERVAL
+)
 from SOD_Utils import ensure_save_directory
 from SOD_Detections import DetectionResults
 
 class CaptureManager:
     """Manages frame capture and saving operations."""
     
-    def __init__(self, save_dir: str = DEFAULT_SAVE_DIR):
+    def __init__(self, save_dir: str = JPG_SAVE_DIR):
         """
         Initialize the capture manager.
         
@@ -27,11 +31,10 @@ class CaptureManager:
             save_dir: Directory for saving detections
         """
         self.save_dir = save_dir
-        self.raw_dir = os.path.join(save_dir, RAW_SUBDIR)  # Initialize raw_dir
-        self.current_video_counter = None  # Track current video number
-        self.current_jpg_suffix = 'a'      # Track current letter suffix
-        self.pause_until = 0  # Initialize pause timer
-        self.last_save_time = 0  # Initialize last save time
+        self.raw_dir = os.path.join(save_dir, RAW_SUBDIR)
+        self.current_video_number = None
+        self.current_jpg_suffix = 'a'
+        self.last_save_time = 0
         
         # Setup save queue and worker thread
         self.save_queue = queue.Queue()
@@ -40,10 +43,10 @@ class CaptureManager:
         
         # Ensure save directory exists
         os.makedirs(self.save_dir, exist_ok=True)
-        
+
     def initialize(self) -> bool:
         """
-        Initialize directories and start save worker.
+        Initialize directories and start save worker thread.
         
         Returns:
             bool: True if initialization successful
@@ -52,9 +55,6 @@ class CaptureManager:
             # Create directories if needed
             os.makedirs(self.save_dir, exist_ok=True)
             os.makedirs(self.raw_dir, exist_ok=True)
-            
-            # Get last counter value
-            self.counter = self._get_last_counter()
             
             # Start save worker thread
             self.is_running = True
@@ -69,27 +69,6 @@ class CaptureManager:
         except Exception as e:
             print(f"Error initializing capture manager: {str(e)}")
             return False
-
-    def _get_last_counter(self) -> int:
-        """
-        Get the last used counter value from existing files.
-        
-        Returns:
-            int: Next available counter value
-        """
-        counter = 0
-        existing_files = [f for f in os.listdir(self.save_dir) if f.endswith('.jpg')]
-        if existing_files:
-            numbers = []
-            for f in existing_files:
-                try:
-                    num = int(f.replace('.jpg', ''))
-                    numbers.append(num)
-                except ValueError:
-                    continue
-            if numbers:
-                counter = max(numbers) + 1
-        return counter
 
     def _save_worker(self):
         """Worker thread for handling frame saves."""
@@ -112,75 +91,85 @@ class CaptureManager:
                 print(f"Error in save worker: {str(e)}")
                 continue
 
-    def process_detections(self, frame: np.ndarray, detections: DetectionResults, debug_view: np.ndarray = None) -> None:
-        """Process detections and save frames."""
-        try:
-            current_time = time.time()
-            
-            # Check if we're in a pause period
-            if self.is_paused():
-                return
-            
-            # Only save if we have anomalies and enough time has passed
-            if detections.anomalies:
-                if current_time - self.last_save_time >= SAVE_INTERVAL:
-                    # Create filename using video counter and letter suffix
-                    filename = f"{self.current_video_counter:05d}-{self.current_jpg_suffix}.jpg"
-                    save_path = os.path.join(self.save_dir, filename)
-                    
-                    # Add to save queue
-                    if debug_view is not None:
-                        # Create combined image
-                        h, w = frame.shape[:2]
-                        debug_h, debug_w = debug_view.shape[:2]
-                        combined = np.zeros((h, w + debug_w, 3), dtype=np.uint8)
-                        combined[0:debug_h, 0:debug_w] = debug_view
-                        combined[0:h, debug_w:] = frame
-                        self.save_queue.put((combined, save_path))
-                    else:
-                        self.save_queue.put((frame, save_path))
-                    
-                    # Update state
-                    self.current_jpg_suffix = chr(ord(self.current_jpg_suffix) + 1)
-                    self.last_save_time = current_time
-                    
-        except Exception as e:
-            print(f"Error processing detections: {str(e)}")
+    def start_new_video(self, video_number: int) -> None:
+        """
+        Start tracking a new video number.
+        
+        Args:
+            video_number: The video number to track
+        """
+        self.current_video_number = video_number
+        self.current_jpg_suffix = 'a'
+        self.last_save_time = 0
 
-    def save_detection(self, frame: np.ndarray, debug_view: np.ndarray = None) -> None:
+    def get_next_filename(self, check_interval: bool = True) -> Optional[str]:
+        """
+        Get the next filename to use for saving, respecting save interval.
+        
+        Args:
+            check_interval: Whether to enforce SAVE_INTERVAL
+            
+        Returns:
+            str: Filename to use, or None if should not save yet
+        """
+        if self.current_video_number is None:
+            return f"unmatched_{int(time.time())}.jpg"
+            
+        current_time = time.time()
+        if check_interval and current_time - self.last_save_time < SAVE_INTERVAL:
+            return None
+            
+        filename = f"{self.current_video_number:05d}-{self.current_jpg_suffix}.jpg"
+        self.current_jpg_suffix = chr(ord(self.current_jpg_suffix) + 1)
+        self.last_save_time = current_time
+        return filename
+
+    def save_detection(self, frame: np.ndarray, debug_view: np.ndarray = None, filename: str = None, check_interval: bool = True) -> None:
         """
         Save a detection frame with debug view if available.
         
         Args:
             frame: Frame to save
             debug_view: Debug visualization
+            filename: Optional specific filename to use
+            check_interval: Whether to enforce SAVE_INTERVAL
         """
         try:
+            # Get filename if not provided
+            if filename is None:
+                filename = self.get_next_filename(check_interval)
+                if filename is None:  # Too soon to save
+                    return
+            
+            # Create combined image if debug view provided
             if debug_view is not None:
-                # Create combined image
                 debug_h, debug_w = debug_view.shape[:2]
                 frame_h, frame_w = frame.shape[:2]
                 combined = np.zeros((frame_h, frame_w + debug_w, 3), dtype=np.uint8)
+                # Put debug view on left, main frame on right
                 combined[0:debug_h, 0:debug_w] = debug_view
                 combined[0:frame_h, debug_w:] = frame
                 save_image = combined
             else:
                 save_image = frame
             
-            # Generate filename using video counter and letter suffix
-            if self.current_video_counter is not None:
-                filename = f"{self.current_video_counter:05d}-{self.current_jpg_suffix}.jpg"
-                self.current_jpg_suffix = chr(ord(self.current_jpg_suffix) + 1)  # Increment letter
-            else:
-                filename = f"unmatched_{int(time.time())}.jpg"
-            
             save_path = os.path.join(self.save_dir, filename)
-            
-            # Add to save queue
             self.save_queue.put((save_image, save_path))
             
         except Exception as e:
             print(f"Error saving detection: {str(e)}")
+
+    def process_detections(self, frame: np.ndarray, detections: DetectionResults, debug_view: np.ndarray = None) -> None:
+        """Process detections and save frames."""
+        try:
+            if self.is_paused():
+                return
+                
+            if detections.anomalies:
+                self.save_detection(frame, debug_view, check_interval=True)
+                
+        except Exception as e:
+            print(f"Error processing detections: {str(e)}")
 
     def save_raw_frame(self, frame: np.ndarray) -> None:
         """
@@ -262,6 +251,23 @@ class CaptureManager:
         """Set current video counter and reset jpg suffix."""
         self.current_video_counter = counter
         self.current_jpg_suffix = 'a'
+
+    def get_detection_count(self, video_number: int) -> int:
+        """
+        Get the number of detections for a specific video number.
+        
+        Args:
+            video_number: The video number to count detections for
+            
+        Returns:
+            int: Number of detections (0 if no detections found)
+        """
+        count = 0
+        # Count files matching pattern XXXXX-[a-z].jpg
+        for f in os.listdir(self.save_dir):
+            if f.startswith(f"{video_number:05d}-") and f.endswith(".jpg"):
+                count += 1
+        return count
 
 
    

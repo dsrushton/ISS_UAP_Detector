@@ -7,7 +7,10 @@ import cv2
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 
-from SOD_Constants import CLASS_COLORS, CLASS_NAMES, CROPPED_WIDTH
+from SOD_Constants import (
+    CLASS_COLORS, CLASS_NAMES, CROPPED_WIDTH,
+    DEBUG_VIEW_ENABLED, CONTOUR_COLOR, ANOMALY_BOX_COLOR
+)
 from SOD_Detections import DetectionResults
 
 class DisplayManager:
@@ -17,58 +20,61 @@ class DisplayManager:
         self.debug_view = None
         self.last_save_time = 0
         
-    def create_debug_view(self, roi: np.ndarray, contours: list, anomalies: list = None, metadata: dict = None) -> np.ndarray:
+    def create_debug_view(self, roi: np.ndarray, contours: list, space_box: tuple, anomalies=None, metadata=None) -> np.ndarray:
         """Create debug visualization with contours and anomalies."""
-        # Get ROI dimensions
+        if not DEBUG_VIEW_ENABLED:
+            return np.zeros((roi.shape[0], roi.shape[1], 3), dtype=np.uint8)
+        
+        # Get dimensions
         roi_h, roi_w = roi.shape[:2]
-        
-        # Create debug view with same width as cropped frame
         debug_view = np.zeros((roi_h, CROPPED_WIDTH, 3), dtype=np.uint8)
+        x_offset = (CROPPED_WIDTH - roi_w) // 2  # Center the ROI
         
-        # Calculate center offset to place ROI in middle
-        x_offset = (CROPPED_WIDTH - roi_w) // 2
+        # Copy ROI to debug view
+        debug_view[:, x_offset:x_offset+roi_w] = roi.copy()
         
-        # Copy ROI into center of debug view
-        debug_view[:, x_offset:x_offset+roi_w] = roi
-        overlay = debug_view.copy()
-        
-        # If nofeed is detected, return blank debug view
-        if metadata and metadata.get('nofeed_detected'):
+        # Check for nofeed detection
+        if metadata is not None and metadata.get('nofeed_detected', False):
             return debug_view
         
-        # Draw all contours in green (thinner lines), shifted by x_offset
-        shifted_contours = []
-        for contour in contours:
-            shifted_contour = contour.copy()
-            shifted_contour[:, :, 0] += x_offset  # Shift x coordinates
-            shifted_contours.append(shifted_contour)
-        cv2.drawContours(debug_view, shifted_contours, -1, (0, 255, 0), 1)
+        # Create overlay for contours and anomalies
+        overlay = np.zeros_like(debug_view)
+        roi_section = overlay[:, x_offset:x_offset+roi_w]
         
-        # Draw anomaly boxes in red with transparency, shifted by x_offset
-        if anomalies:
+        # Draw contours in green
+        if contours is not None and len(contours) > 0:
+            cv2.drawContours(roi_section, contours, -1, CONTOUR_COLOR, 1)
+        
+        # Draw anomalies and metrics
+        if anomalies is not None and metadata is not None and 'anomaly_metrics' in metadata:
+            metrics_lookup = {}
+            for m in metadata['anomaly_metrics']:
+                pos = m['position']
+                roi_x, roi_y = pos[0] - space_box[0], pos[1] - space_box[1]
+                metrics_lookup[(roi_x, roi_y)] = m
+            
             for x, y, w, h in anomalies:
-                # Draw shifted rectangle
-                cv2.rectangle(debug_view, 
-                            (x + x_offset, y), 
-                            (x + w + x_offset, y + h), 
-                            (0, 0, 255), 2)  # Red color, thickness 2
+                # Adjust coordinates to ROI space
+                roi_x = x - space_box[0]
+                roi_y = y - space_box[1]
                 
-                # Add metrics if available
-                if metadata and 'anomaly_metrics' in metadata:
-                    for metric in metadata['anomaly_metrics']:
-                        if metric['position'] == (x + x_offset, y, w, h):  # Need to adjust position check
-                            text = f"B:{metric['obj_brightness']:.1f} C:{metric['contrast']:.1f}"
-                            cv2.putText(debug_view, text, 
-                                      (x + x_offset, y - 5),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                # Draw bounding box
+                cv2.rectangle(roi_section, 
+                            (roi_x, roi_y), 
+                            (roi_x + w, roi_y + h), 
+                            ANOMALY_BOX_COLOR, 2)
+                
+                # Find matching metrics
+                metric = metrics_lookup.get((roi_x, roi_y))
+                if metric:
+                    text = f"B:{metric['obj_brightness']:.1f} C:{metric['contrast']:.1f}"
+                    cv2.putText(roi_section, text, 
+                              (roi_x, roi_y - 5),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.4, ANOMALY_BOX_COLOR, 1)
         
-        # Blend overlay with original
-        alpha = 0.3  # Transparency factor
-        cv2.addWeighted(overlay, alpha, debug_view, 1 - alpha, 0, debug_view)
-        
-        # Add text indicating this is debug view
-        cv2.putText(debug_view, "Space Region Debug View", (10, 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        # Blend overlay with debug view
+        alpha = 0.7
+        cv2.addWeighted(debug_view, alpha, overlay, 1 - alpha, 0, debug_view)
         
         return debug_view
 
@@ -159,7 +165,15 @@ class DisplayManager:
         return frame
 
     def draw_nofeed_overlay(self, frame: np.ndarray) -> np.ndarray:
-        """Draw NO FEED overlay on frame."""
+        """
+        Draw nofeed overlay on frame.
+        
+        Args:
+            frame: Input frame
+            
+        Returns:
+            Frame with nofeed overlay
+        """
         # Draw "NO FEED" text centered
         text = "NO FEED"
         font = cv2.FONT_HERSHEY_SIMPLEX

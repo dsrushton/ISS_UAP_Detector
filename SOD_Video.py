@@ -1,169 +1,170 @@
+"""
+Video management and processing module.
+Handles video capture, writing, and frame buffering.
+"""
+
 import cv2
+import queue
+import threading
+import time
+from typing import Optional, Tuple
 import numpy as np
 from collections import deque
-import time
 import os
-from typing import Optional, Tuple
-import logging
 
 from SOD_Constants import (
-    BUFFER_SECONDS, POST_DETECTION_SECONDS, 
-    VIDEO_FPS, VIDEO_SAVE_DIR, CROPPED_WIDTH
+    BUFFER_SECONDS,
+    VIDEO_FPS,
+    VIDEO_SAVE_DIR,
+    JPG_SAVE_DIR
 )
-from SOD_Utils import crop_frame
 
-class VideoManager:
-    """Manages video buffering and recording."""
+class ThreadedVideoWriter:
+    """Handles video writing in a separate thread."""
     
-    def __init__(self):
-        self.frame_buffer = deque(maxlen=BUFFER_SECONDS * VIDEO_FPS)
-        self.is_recording = False
-        self.writer = None
-        self.counter = 0
-        self.last_detection_time = 0
-        self.current_video_path = None
-        self.cap = None  # Initialize as None, will set up in set_source()
+    def __init__(self, max_queue_size: int = 300):
+        self.frame_queue = queue.Queue(maxsize=max_queue_size)
+        self.writer: Optional[cv2.VideoWriter] = None
+        self.is_running = False
+        self.thread = None
+        self.current_filename = None
         
-        # Ensure save directory exists
-        os.makedirs(VIDEO_SAVE_DIR, exist_ok=True)
+    def start(self, filename: str, fps: float, frame_size: Tuple[int, int]) -> bool:
+        """Start the video writer thread."""
+        if self.is_running:
+            return False
+            
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        self.writer = cv2.VideoWriter(filename, fourcc, fps, frame_size)
+        if not self.writer.isOpened():
+            return False
+            
+        self.current_filename = filename
+        self.is_running = True
+        self.thread = threading.Thread(target=self._write_frames)
+        self.thread.daemon = True
+        self.thread.start()
+        return True
         
-        # Get last counter value
-        existing_files = [f for f in os.listdir(VIDEO_SAVE_DIR) if f.endswith('.avi')]
-        if existing_files:
-            numbers = [int(f.replace('.avi', '')) for f in existing_files]
-            self.counter = max(numbers) + 1
-    
-    def add_to_buffer(self, frame: np.ndarray) -> None:
-        """Add frame to rolling buffer."""
-        self.frame_buffer.append(frame.copy())
-    
-    def start_recording(self, frame: np.ndarray, debug_view: np.ndarray = None) -> None:
-        """Start new recording with buffered frames."""
-        if self.is_recording:
-            return
-            
-        # Get dimensions from frame
-        h, w = frame.shape[:2]  # Should be 939x720
-        
-        # If we have a debug view, create combined frame
-        if debug_view is not None:
-            debug_h, debug_w = debug_view.shape[:2]
-            combined_w = w + debug_w
-            combined_h = max(h, debug_h)
-            
-            # Initialize writer with better compression
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Better compression
-            filename = f"{self.counter:05d}.avi"
-            self.current_video_path = os.path.join(VIDEO_SAVE_DIR, filename)
-            self.writer = cv2.VideoWriter(
-                self.current_video_path,
-                fourcc,
-                VIDEO_FPS,
-                (combined_w, combined_h),
-                True  # isColor
-            )
-            
-            # Write buffered frames - ensure they're cropped
-            for buffered_frame in self.frame_buffer:
-                if buffered_frame.shape[1] != CROPPED_WIDTH:
-                    buffered_frame = crop_frame(buffered_frame)
-                combined = np.zeros((combined_h, combined_w, 3), dtype=np.uint8)
-                combined[0:h, debug_w:] = buffered_frame
-                combined[0:debug_h, 0:debug_w] = debug_view
-                self.writer.write(combined)
-        else:
-            # Regular video without debug view
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Better compression
-            filename = f"{self.counter:05d}.avi"
-            self.current_video_path = os.path.join(VIDEO_SAVE_DIR, filename)
-            self.writer = cv2.VideoWriter(
-                self.current_video_path,
-                fourcc,
-                VIDEO_FPS,
-                (w, h),
-                True  # isColor
-            )
-            
-            # Write buffered frames
-            for buffered_frame in self.frame_buffer:
-                self.writer.write(buffered_frame)
-        
-        self.is_recording = True
-        self.last_detection_time = time.time()
-        print(f"\nStarted recording: {filename} (with {len(self.frame_buffer)} buffered frames)")
-    
-    def update_recording(self, frame: np.ndarray, has_detection: bool, debug_view: np.ndarray = None) -> None:
-        """Update ongoing recording."""
-        if not self.is_recording:
-            return
-            
-        current_time = time.time()
-        
-        # Write the frame
-        if debug_view is not None:
-            h, w = frame.shape[:2]
-            debug_h, debug_w = debug_view.shape[:2]
-            combined_w = w + debug_w
-            combined_h = max(h, debug_h)
-            combined = np.zeros((combined_h, combined_w, 3), dtype=np.uint8)
-            combined[0:h, debug_w:] = frame
-            combined[0:debug_h, 0:debug_w] = debug_view
-            self.writer.write(combined)
-        else:
-            self.writer.write(frame)
-        
-        if has_detection:
-            # Reset the timer on new detection
-            self.last_detection_time = current_time
-        elif current_time - self.last_detection_time > POST_DETECTION_SECONDS:
-            # Stop recording if no detection for POST_DETECTION_SECONDS
-            self.stop_recording()
-    
-    def stop_recording(self) -> None:
-        """Stop current recording."""
-        if not self.is_recording:
-            return
-            
-        self.writer.release()
-        self.writer = None
-        self.is_recording = False
-        self.counter += 1
-        print(f"\nStopped recording: {self.current_video_path}")
-        self.current_video_path = None
-    
-    def cleanup(self) -> None:
-        """Clean up resources."""
+    def stop(self) -> None:
+        """Stop the video writer thread."""
+        self.is_running = False
+        if self.thread:
+            self.thread.join()
         if self.writer:
             self.writer.release()
+            self.writer = None
+        self.current_filename = None
+        
+    def write(self, frame: np.ndarray) -> bool:
+        """Add a frame to the queue for writing."""
+        try:
+            self.frame_queue.put(frame.copy(), timeout=1)
+            return True
+        except queue.Full:
+            print("Warning: Video write queue is full")
+            return False
+            
+    def _write_frames(self) -> None:
+        """Worker thread that processes the frame queue."""
+        while self.is_running:
+            try:
+                frame = self.frame_queue.get(timeout=1)
+                if self.writer and frame is not None:
+                    self.writer.write(frame)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"Error writing video frame: {str(e)}")
+                
+class VideoManager:
+    """Manages video capture and writing operations."""
+    
+    def __init__(self):
+        self.cap: Optional[cv2.VideoCapture] = None
+        self.frame_buffer = deque(maxlen=BUFFER_SECONDS * VIDEO_FPS)
+        self.video_writer = ThreadedVideoWriter()
+        self.recording = False
+        self.frames_since_detection = 0
+        self.current_video_number = None
+        
+    def set_source(self, source: str) -> bool:
+        """Set the video source and initialize capture."""
+        if self.cap is not None:
+            self.cap.release()
+            
+        self.cap = cv2.VideoCapture(source)
+        return self.cap.isOpened()
+        
+    def get_frame(self) -> Tuple[bool, Optional[np.ndarray]]:
+        """Get the next frame from the video source."""
+        if not self.cap or not self.cap.isOpened():
+            return False, None
+            
+        ret, frame = self.cap.read()
+        if ret:
+            self.frame_buffer.append(frame.copy())
+        return ret, frame
+        
+    def get_next_video_number(self) -> int:
+        """Find the next available video number by checking both video and jpg files."""
+        i = 0
+        # Check both AVI and JPG directories to find highest number
+        while True:
+            avi_exists = os.path.exists(os.path.join(VIDEO_SAVE_DIR, f"{i:05d}.avi"))
+            jpg_exists = any(f.startswith(f"{i:05d}-") for f in os.listdir(JPG_SAVE_DIR))
+            if not avi_exists and not jpg_exists:
+                break
+            i += 1
+        return i
+
+    def start_recording(self, frame_size: tuple) -> bool:
+        """Start recording video with buffer."""
+        if self.recording:
+            return False
+            
+        # Get next available video number
+        self.current_video_number = self.get_next_video_number()
+        filename = os.path.join(VIDEO_SAVE_DIR, f"{self.current_video_number:05d}.avi")
+            
+        # Initialize video writer
+        if self.video_writer.start(filename, VIDEO_FPS, frame_size):
+            # Write buffered frames first
+            for frame in self.frame_buffer:
+                self.video_writer.write(frame)
+            self.recording = True
+            self.frames_since_detection = 0
+            return True
+        return False
+        
+    def stop_recording(self) -> None:
+        """Stop recording video."""
+        if self.recording:
+            self.recording = False
+            self.video_writer.stop()
+            print("\nStopped recording")
+            
+    def update_recording(self, frame: np.ndarray, has_detection: bool = False) -> None:
+        """Update recording with new frame."""
+        if not self.recording:
+            return
+            
+        if not self.video_writer.write(frame):
+            print("Warning: Failed to write frame")
+            
+        if has_detection:
+            # Reset countdown on new detection
+            self.frames_since_detection = 0
+        else:
+            self.frames_since_detection += 1
+            
+        # Stop after 2 seconds with no detections
+        if self.frames_since_detection >= VIDEO_FPS * 2:
+            self.stop_recording()
+                
+    def cleanup(self) -> None:
+        """Clean up resources."""
         if self.cap:
             self.cap.release()
-    
-    def set_source(self, source: str) -> bool:
-        """Set video source and initialize capture."""
-        try:
-            if self.cap is not None:
-                self.cap.release()
-            
-            self.cap = cv2.VideoCapture(source)
-            if not self.cap.isOpened():
-                print(f"Failed to open video source: {source}")
-                return False
-            
-            return True
-        except Exception as e:
-            print(f"Error setting video source: {e}")
-            return False
-    
-    def get_frame(self) -> Tuple[bool, Optional[np.ndarray]]:
-        """Get frame from video source."""
-        try:
-            if self.cap is None:
-                return False, None
-            
-            ret, frame = self.cap.read()
-            if ret:
-                self.add_to_buffer(frame)
-            return ret, frame
-        except Exception as e:
-            logging.error(f"Error getting frame: {e}")
-            return False, None 
+        self.stop_recording()
+        self.frame_buffer.clear() 

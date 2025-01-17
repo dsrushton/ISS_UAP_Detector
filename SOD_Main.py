@@ -8,11 +8,15 @@ import threading
 import time
 import os
 from typing import Optional
+import numpy as np
 
 from SOD_Constants import (
     MAX_CONSECUTIVE_ERRORS, 
     BURST_CAPTURE_FRAMES, 
-    CROPPED_WIDTH
+    CROPPED_WIDTH,
+    TEST_IMAGE_PATH,
+    RECONNECT_DELAY,
+    VIDEO_SAVE_DIR
 )
 from SOD_Utils import get_best_stream_url, crop_frame
 from SOD_Video import VideoManager
@@ -39,8 +43,9 @@ class SpaceObjectDetectionSystem:
         self.burst_remaining: int = 0
         self.is_running: bool = False
         
-        # Test frame injection
-        self.test_image = None
+        # Test image state
+        self.test_images = []
+        self.current_test_image = 0
         self.inject_test_frames = 0
         
         self.video = VideoManager()
@@ -63,130 +68,119 @@ class SpaceObjectDetectionSystem:
                 print("Failed to initialize capture system")
                 return False
                 
+            # Load test images
+            if not self.load_test_images():
+                print("Warning: Could not load test images")
+            
             return True
             
         except Exception as e:
             print(f"Error during initialization: {str(e)}")
             return False
 
-    def load_test_image(self, path: str) -> bool:
-        """Load test image for injection."""
-        try:
-            self.test_image = cv2.imread(path)
-            return self.test_image is not None
-        except Exception as e:
-            print(f"Error loading test image: {e}")
-            return False
-
-    def process_frame(self, frame) -> Optional[bool]:
+    def process_frame(self, frame: np.ndarray) -> Optional[bool]:
         """
-        Process a single frame through the detection pipeline.
+        Process a single frame.
         
-        Args:
-            frame: Video frame to process
-            
         Returns:
-            Optional[bool]: True to continue, False to stop, None on error
+            None if error occurred
+            False if should quit
+            True if processed successfully
         """
         try:
             # Handle test frame injection
-            if self.inject_test_frames > 0 and self.test_image is not None:
-                frame = self.test_image.copy()
-                print(f"\nTest frame {self.inject_test_frames}/10")
-                self.inject_test_frames -= 1
-            else:
-                # Crop frame from live feed (test frame is already 939x720)
+            if self.inject_test_frames > 0:
+                if self.current_test_image < len(self.test_images):
+                    frame = self.test_images[self.current_test_image].copy()
+                    self.current_test_image += 1
+                    if self.current_test_image >= len(self.test_images):
+                        self.current_test_image = 0
+                    self.inject_test_frames -= 1
+                else:
+                    self.inject_test_frames = 0
+            
+            # Crop frame if needed
+            if frame.shape[1] != CROPPED_WIDTH:
                 frame = crop_frame(frame)
             
-            # Add frame to buffer
-            self.video.add_to_buffer(frame)
-            
-            # Run detection on cropped frame
-            predictions = self.detector.process_frame(frame)
-            if predictions is None:
+            # Run detection
+            detections = self.detector.process_frame(frame)
+            if detections is None:
                 return None
-                
-            # Update display with detections
-            annotated_frame = self.display.draw_detections(frame, predictions)
+            
+            # Update display
+            annotated_frame = self.display.draw_detections(frame, detections)
+            
+            # Create debug view if we have a space region
             debug_view = None
-            
-            # Create debug view if there's a space region
-            if predictions.space_box is not None:
-                x1, y1, x2, y2 = predictions.space_box
-                space_roi = frame[y1:y2, x1:x2]
-                
-                # Get contours from space region
-                gray = cv2.cvtColor(space_roi, cv2.COLOR_BGR2GRAY)
-                background = cv2.GaussianBlur(gray, (21, 21), 0)
-                diff = cv2.absdiff(gray, background)
-                _, thresh = cv2.threshold(diff, 10, 255, cv2.THRESH_BINARY)
-                contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
-                # Convert anomaly coordinates to ROI space
-                roi_anomalies = []
-                if predictions.anomalies:
-                    for ax, ay, aw, ah in predictions.anomalies:
-                        # Convert to ROI coordinates
-                        roi_x = ax - x1
-                        roi_y = ay - y1
-                        roi_anomalies.append((roi_x, roi_y, aw, ah))
-                
-                # Create debug view with ROI-space anomalies
+            if detections.space_box is not None:
+                x1, y1, x2, y2 = detections.space_box
+                roi = frame[y1:y2, x1:x2]
                 debug_view = self.display.create_debug_view(
-                    space_roi, 
-                    contours,
-                    roi_anomalies if roi_anomalies else None,
-                    predictions.metadata
+                    roi, 
+                    detections.contours,
+                    detections.space_box,
+                    detections.anomalies,
+                    detections.metadata
                 )
+            
+            # Handle video recording
+            if detections.anomalies and not self.video.recording:
+                # Start new recording
+                frame_size = (frame.shape[1], frame.shape[0]) if debug_view is None else (
+                    frame.shape[1] + debug_view.shape[1],
+                    max(frame.shape[0], debug_view.shape[0])
+                )
+                if self.video.start_recording(frame_size):
+                    print(f"\nStarted recording: {self.video.current_video_number:05d}.mp4")
+                    # Start tracking this video number for JPGs
+                    self.capture.start_new_video(self.video.current_video_number)
+                    # Save first detection frame without interval check
+                    self.capture.save_detection(annotated_frame, debug_view, check_interval=False)
+            
+            # Update recording if active
+            if self.video.recording:
                 if debug_view is not None:
-                    cv2.imshow('Space Debug View', debug_view)
+                    # Combine frame and debug view for recording
+                    h, w = frame.shape[:2]
+                    debug_h, debug_w = debug_view.shape[:2]
+                    combined = np.zeros((max(h, debug_h), w + debug_w, 3), dtype=np.uint8)
+                    # Put debug view on left, main frame on right
+                    combined[:debug_h, :debug_w] = debug_view
+                    combined[:h, debug_w:] = annotated_frame
+                    self.video.update_recording(combined, detections.anomalies)
+                    
+                    # Save new detection frame if anomaly detected
+                    if detections.anomalies:
+                        self.capture.save_detection(annotated_frame, debug_view)
+                else:
+                    self.video.update_recording(annotated_frame, detections.anomalies)
             
-            # Show main detection view
-            cv2.imshow('Space Object Detection', annotated_frame)
-            
-            # Handle burst capture if active
+            # Handle burst capture
             if self.burst_remaining > 0:
-                self.capture.save_raw_frame(frame)
+                self.capture.save_frame(frame, debug_view)
                 self.burst_remaining -= 1
-                if self.burst_remaining == 0:
-                    print("\nBurst save complete!")
             
-            # Handle detections - always do both video and image
-            if predictions.anomalies:
-                # Start/update video recording
-                if not self.video.is_recording:
-                    self.video.start_recording(annotated_frame, debug_view)
-                    # Set the video counter for jpg naming
-                    self.capture.set_video_counter(self.video.counter)
-                self.video.update_recording(annotated_frame, True, debug_view)
-                
-                # Save image
-                self.capture.process_detections(annotated_frame, predictions, debug_view)
-            elif self.video.is_recording:
-                # Update ongoing video recording
-                self.video.update_recording(annotated_frame, False, debug_view)
-            
-            # Increment frame counter
-            self.frame_count += 1
+            # Display frames
+            cv2.imshow('Main View', annotated_frame)
+            if debug_view is not None:
+                cv2.imshow('Debug View', debug_view)
             
             # Handle user input
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
+                print("\nQuitting...")
+                self._cleanup()
                 return False
-            elif key == ord('f'):
-                print("\nStarting test image injection!")
-                self.inject_test_frames = 10
-                # Load test image if not already loaded
-                if self.test_image is None:
-                    self.load_test_image(r"C:\Users\dsrus\OneDrive\Pictures\sprites1.jpg")
-            elif key == ord(' '):
-                print("\nStarting 100 frame burst save to raw directory!")
+            elif key == ord('t'):
+                self.inject_test_frames = 100
+            elif key == ord('b'):
                 self.burst_remaining = BURST_CAPTURE_FRAMES
-                
+            
             return True
             
         except Exception as e:
-            print(f"\nError processing frame: {str(e)}")
+            print(f"Error processing frame: {str(e)}")
             return None
 
     def process_video_stream(self, source: str, is_youtube: bool = False) -> None:
@@ -223,35 +217,52 @@ class SpaceObjectDetectionSystem:
 
                 # Main processing loop
                 consecutive_errors = 0
+                backoff_time = RECONNECT_DELAY
                 
                 while self.is_running:
-                    # Read frame
-                    ret, frame = self.video.get_frame()
-                    if not ret:
+                    try:
+                        # Get fresh stream URL for YouTube
+                        url = get_best_stream_url(source)
+                        self.cap = cv2.VideoCapture(url)
+                    except Exception as e:
+                        print(f"Error: {str(e)}")
                         consecutive_errors += 1
-                        print(f"\nFrame read error ({consecutive_errors})")
-                        if consecutive_errors > MAX_CONSECUTIVE_ERRORS:
-                            print("\nToo many consecutive errors. Attempting to reconnect in 5 seconds...")
-                            break  # Break inner loop to attempt reconnection
+                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                            print(f"\nToo many consecutive errors ({consecutive_errors}). Attempting reconnection...")
+                            time.sleep(backoff_time)
+                            backoff_time = min(backoff_time * 2, 60)  # Double backoff time, max 60 seconds
+                            self._cleanup()  # Ensure resources are cleaned up before reconnecting
+                        else:
+                            time.sleep(1)  # Brief pause before retry
                         continue
                         
-                    # Reset error counter on successful read
-                    consecutive_errors = 0
+                    if not self.cap.isOpened():
+                        raise RuntimeError("Failed to open video capture")
+                        
+                    print("Connected to ISS live feed")
+                    consecutive_errors = 0  # Reset error count on successful connection
+                    backoff_time = RECONNECT_DELAY  # Reset backoff time
                     
-                    # Process frame
-                    result = self.process_frame(frame)
-                    if result is None:
-                        consecutive_errors += 1
-                        continue
-                    elif result is False:
-                        self.is_running = False  # User quit
-                        break
+                    while self.is_running:
+                        # Read frame
+                        ret, frame = self.cap.read()
+                        if not ret:
+                            raise RuntimeError("Failed to read frame")
                         
-                # Clean up current capture before reconnection attempt
-                self.video.cap.release()
-                if self.is_running:  # Only sleep if we're retrying
-                    time.sleep(5)
-                
+                        # Process frame
+                        result = self.process_frame(frame)
+                        if result is None:
+                            consecutive_errors += 1
+                            continue
+                        elif result is False:
+                            self.is_running = False  # User quit
+                            break
+                        
+                    # Clean up current capture before reconnection attempt
+                    self.video.cap.release()
+                    if self.is_running:  # Only sleep if we're retrying
+                        time.sleep(5)
+                    
             except Exception as e:
                 print(f"\nError processing video stream: {str(e)}")
                 self.is_running = False
@@ -259,6 +270,16 @@ class SpaceObjectDetectionSystem:
         # Final cleanup
         cv2.destroyAllWindows()
         self.cleanup()
+
+    def _cleanup(self):
+        """Clean up resources."""
+        if self.cap is not None:
+            self.cap.release()
+        cv2.destroyAllWindows()
+        if hasattr(self, 'video_writer') and self.video_writer is not None:
+            self.video_writer.release()
+        if hasattr(self, 'save_thread') and self.save_thread is not None:
+            self.save_thread.join()
 
     def cleanup(self) -> None:
         """Clean up resources and perform any necessary shutdown tasks."""
@@ -338,6 +359,38 @@ class SpaceObjectDetectionSystem:
         finally:
             cap.release()
             cv2.destroyAllWindows()
+
+    def load_test_images(self) -> bool:
+        """Load all test images."""
+        try:
+            self.test_images = []
+            img = cv2.imread(TEST_IMAGE_PATH)
+            if img is not None:
+                # Get rightmost 939x720 pixels
+                h, w = img.shape[:2]
+                x1 = max(0, w - 939)  # Start x coordinate for cropping
+                img = img[:720, x1:]  # Crop to 939x720 from the right
+                self.test_images.append(img)
+                print(f"Loaded test image: {TEST_IMAGE_PATH}")
+                return True
+            else:
+                print(f"Failed to load test image: {TEST_IMAGE_PATH}")
+                return False
+            
+        except Exception as e:
+            print(f"Error loading test images: {e}")
+            return False
+
+    def start_test_injection(self, frames: int = 10) -> None:
+        """Start test frame injection."""
+        if self.test_images:
+            self.inject_test_frames = frames
+            print(f"\nStarting {frames} frame test injection")
+        else:
+            if self.load_test_images():
+                self.start_test_injection(frames)
+            else:
+                print("No test images available")
 
 def main():
     """Main entry point for the Space Object Detection system."""
