@@ -267,15 +267,13 @@ class SpaceObjectDetector:
                 return results
             
             # Check lens flare count
-            skip_contour_detection = False
             if 'lf' in self.last_rcnn_results['boxes']:
                 lf_count = len(self.last_rcnn_results['boxes']['lf'])
                 if lf_count >= MAX_LENS_FLARES:
-                    skip_contour_detection = True
-                    results.metadata['skipped_contours_lf'] = True
+                    results.metadata['skip_save'] = 'too_many_lens_flares'
             
-            # Only proceed with anomaly detection if we have a space region and not skipping due to lens flares
-            if 'space' in results.rcnn_boxes and not skip_contour_detection:
+            # Only proceed with anomaly detection if we have a space region
+            if 'space' in results.rcnn_boxes:
                 space_boxes = sorted(results.rcnn_boxes['space'], 
                                   key=lambda box: box[1])  # Sort by y1 coordinate
                 
@@ -315,22 +313,45 @@ class SpaceObjectDetector:
                 # Get lens flare boxes for filtering
                 lf_boxes = self.last_rcnn_results['boxes'].get('lf', [])
                 
+                # Get ISS and panel boxes for filtering
+                #iss_boxes = self.last_rcnn_results['boxes'].get('iss', [])
+                panel_boxes = self.last_rcnn_results['boxes'].get('panel', [])
+                
                 # If we have lens flare boxes, filter anomalies that overlap with them
-                if lf_boxes and all_anomalies:
+                if (lf_boxes or panel_boxes) and all_anomalies:
                     filtered_anomalies = []
                     filtered_metrics = []
                     
                     for i, (ax, ay, aw, ah) in enumerate(all_anomalies):
-                        overlaps_lf = False
+                        overlaps = False
+                        
+                        # Check lens flare overlap
                         for lf_box in lf_boxes:
-                            # Check for overlap
                             lf_x1, lf_y1, lf_x2, lf_y2 = lf_box
                             if (ax < lf_x2 and ax + aw > lf_x1 and
                                 ay < lf_y2 and ay + ah > lf_y1):
-                                overlaps_lf = True
+                                overlaps = True
                                 break
                         
-                        if not overlaps_lf:
+                        # Check ISS overlap
+                        #if not overlaps:
+                        #    for iss_box in iss_boxes:
+                        #        iss_x1, iss_y1, iss_x2, iss_y2 = iss_box
+                        #        if (ax < iss_x2 and ax + aw > iss_x1 and
+                        #            ay < iss_y2 and ay + ah > iss_y1):
+                        #            overlaps = True
+                        #            break
+                        
+                        # Check panel overlap
+                        if not overlaps:
+                            for panel_box in panel_boxes:
+                                panel_x1, panel_y1, panel_x2, panel_y2 = panel_box
+                                if (ax < panel_x2 and ax + aw > panel_x1 and
+                                    ay < panel_y2 and ay + ah > panel_y1):
+                                    overlaps = True
+                                    break
+                        
+                        if not overlaps:
                             filtered_anomalies.append((ax, ay, aw, ah))
                             if len(all_metrics) > i:
                                 filtered_metrics.append(all_metrics[i])

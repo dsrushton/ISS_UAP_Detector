@@ -178,3 +178,21 @@ Fixed Issues:
 Continuing to refine detection algorithms for best captures
 Hunting down bugs and inefficiency
 
+## Recent Updates (January 2024):
+- Improved contour filtering:
+  1. Added border margin check (5px) to filter edge detections
+  2. Implemented filtering for contours overlapping with lens flares and panels
+  3. Added metadata tracking for skipped saves
+- Enhanced visualization:
+  1. Increased color vibrancy in debug view (alpha 0.9)
+  2. Expanded bounding boxes by 2px for better visibility
+  3. Standardized bright red color for detections
+- Detection improvements:
+  1. Now searching all space boxes while displaying highest one
+  2. Added duplicate detection prevention using center points
+  3. Improved handling of multiple lens flares
+- Configuration updates:
+  1. Moved lens flare threshold (MAX_LENS_FLARES = 3) to constants
+  2. Updated save interval to 2.0 seconds
+  3. Improved test image handling with proper 939x720 cropping
+

@@ -136,7 +136,8 @@ class SpaceObjectDetectionSystem:
                     # Start tracking this video number for JPGs
                     self.capture.start_new_video(self.video.current_video_number)
                     # Save first detection frame without interval check
-                    self.capture.save_detection(annotated_frame, debug_view, check_interval=False)
+                    if not detections.metadata.get('skip_save'):
+                        self.capture.save_detection(annotated_frame, debug_view, check_interval=False)
             
             # Update recording if active
             if self.video.recording:
@@ -150,8 +151,8 @@ class SpaceObjectDetectionSystem:
                     combined[:h, debug_w:] = annotated_frame
                     self.video.update_recording(combined, detections.anomalies)
                     
-                    # Save new detection frame if anomaly detected
-                    if detections.anomalies:
+                    # Save new detection frame if anomaly detected and not skipped
+                    if detections.anomalies and not detections.metadata.get('skip_save'):
                         self.capture.save_detection(annotated_frame, debug_view)
                 else:
                     self.video.update_recording(annotated_frame, detections.anomalies)

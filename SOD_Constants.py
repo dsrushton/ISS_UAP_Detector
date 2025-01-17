@@ -81,12 +81,13 @@ VIDEO_FPS = 30
 VIDEO_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/ISS_UAP_Detector/Detections/AVI"
 
 # Anomaly Detection Parameters
-MIN_BRIGHTNESS = 12
+#Try using max_value RGB instead of weighted grayscale
+MIN_BRIGHTNESS = 10
 MAX_BRIGHTNESS = 200
 SAVE_INTERVAL = 2.0  # Seconds between saves
 
 # Detection Parameters
-MAX_BG_BRIGHTNESS = 35
+MAX_BG_BRIGHTNESS = 40
 MIN_CONTRAST = 6
 MIN_CONTOUR_WIDTH = 5
 MIN_CONTOUR_HEIGHT = 5
@@ -104,7 +105,7 @@ MAX_LENS_FLARES = 3  # Maximum number of lens flares before skipping contour det
 # Display Parameters
 DEBUG_VIEW_ENABLED = True
 CONTOUR_COLOR = (0, 255, 0)  # Green
-ANOMALY_BOX_COLOR = (0, 0, 255)  # Red
+ANOMALY_BOX_COLOR = (0, 0, 255)  # Bright Red
 NOFEED_TEXT_COLOR = (128, 0, 128)  # Purple
 DARKNESS_OVERLAY_COLOR = (0, 0, 0)  # Black
 
