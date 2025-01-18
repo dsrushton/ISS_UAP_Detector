@@ -8,6 +8,13 @@ import numpy as np
 import subprocess
 from PIL import Image
 import os
+from typing import Optional, Tuple
+
+from SOD_Constants import (
+    RAW_SUBDIR,
+    VIDEO_SAVE_DIR,
+    JPG_SAVE_DIR
+)
 
 def get_best_stream_url(youtube_url: str) -> str:
     """
