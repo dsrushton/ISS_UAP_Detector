@@ -10,7 +10,7 @@ import torch
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Model Path
-MODEL_PATH = r"C:\Users\dsrus\Desktop\Workspace\UAP_Python_2\trainJan10_bb-12e-Full-NoMoon-NoColorJitter\best_map_model.pth"
+MODEL_PATH = "./models/best_map_model.pth"
 
 # Class Definitions
 CLASS_NAMES = [
@@ -61,7 +61,8 @@ MAX_CONSECUTIVE_ERRORS = 30
 BURST_CAPTURE_FRAMES = 100
 
 # Save Directory Structure
-JPG_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/ISS_UAP_Detector/Detections/JPG"
+VIDEO_SAVE_DIR = "./Detections/AVI"
+JPG_SAVE_DIR = "./Detections/JPG"
 RAW_SUBDIR = "Burst_raw"
 
  # Test Image Paths
@@ -69,20 +70,22 @@ RAW_SUBDIR = "Burst_raw"
 #TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\sprites2.jpg"
 #TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\bigmoney2.jpg"  # Known working path
  # Better Tests
-TEST_IMAGE_PATH = r"C:\Users\dsrus\Desktop\Workspace\MTLiens\SpaceObjectDetector\Detections\JPG\000512.jpg"
-#TEST_IMAGE_PATH = r"C:\Users\dsrus\Desktop\Workspace\MTLiens\SpaceObjectDetector\Detections\JPG\001641.jpg"
-#TEST_IMAGE_PATH = r"C:\Users\dsrus\Desktop\Workspace\MTLiens\SpaceObjectDetector\Detections\JPG\001469.jpg"
-#TEST_IMAGE_PATH = r"C:\Users\dsrus\Desktop\Workspace\MTLiens\SpaceObjectDetector\Detections\AVI\JPG\00195-a.jpg"
+#TEST_IMAGE_PATH = "./Test_Image_Collection/000512.jpg"
+#TEST_IMAGE_PATH = "./Test_Image_Collection/000777.jpg"
+#TEST_IMAGE_PATH = "./Test_Image_Collection/000912.jpg
+#TEST_IMAGE_PATH = "./Test_Image_Collection/\001469.jpg"
+#TEST_IMAGE_PATH = "./Test_Image_Collection/001641.jpg"
+TEST_IMAGE_PATH = "./Test_Image_Collection/00195-a.jpg"
 
 # Video Recording Settings
 BUFFER_SECONDS = 3
 POST_DETECTION_SECONDS = 2.1
 VIDEO_FPS = 30
-VIDEO_SAVE_DIR = "C:/Users/dsrus/Desktop/Workspace/MTLiens/ISS_UAP_Detector/Detections/AVI"
+
 
 # Anomaly Detection Parameters
 #Try using max_value RGB instead of weighted grayscale
-MIN_BRIGHTNESS = 10
+MIN_BRIGHTNESS = 23
 MAX_BRIGHTNESS = 200
 SAVE_INTERVAL = 2.0  # Seconds between saves
 
