@@ -133,3 +133,24 @@ def ensure_save_directory(path: str) -> int:
     except Exception as e:
         print(f"Unexpected error in ensure_save_directory: {str(e)}")
         return 0
+
+def init_save_dir(path: str) -> int:
+    """Initialize save directory and get next counter value."""
+    try:
+        path = os.path.normpath(os.path.expanduser(path))
+        
+        # Ensure main directories exist
+        os.makedirs(path, exist_ok=True)
+        os.makedirs(VIDEO_SAVE_DIR, exist_ok=True)  # Create AVI directory
+        os.makedirs(JPG_SAVE_DIR, exist_ok=True)    # Create JPG directory
+        
+        # Ensure raw subdirectory exists
+        raw_dir = os.path.join(path, RAW_SUBDIR)
+        os.makedirs(raw_dir, exist_ok=True)
+        
+        # Find the latest counter value
+        counter = 0
+        return counter
+    except Exception as e:
+        print(f"Error initializing save directories: {str(e)}")
+        return 0

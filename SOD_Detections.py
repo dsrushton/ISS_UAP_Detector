@@ -81,7 +81,7 @@ class SpaceObjectDetector:
         self.consecutive_lf = 0
         self.lf_pause_until = 0  # Track when to resume after lens flares
 
-    def analyze_object(self, gray_frame: np.ndarray, binary_mask: np.ndarray, w: int, h: int) -> bool:
+    def analyze_object(self, frame: np.ndarray, binary_mask: np.ndarray, w: int, h: int) -> bool:
         """Analyze if object passes detection criteria"""
         # STRICT SIZE REQUIREMENTS FIRST
         # Minimum dimensions
@@ -97,7 +97,7 @@ class SpaceObjectDetector:
         min_area = MIN_CONTOUR_AREA if aspect > 3 else MIN_CONTOUR_AREA * 1.5
         
         # Use the binary mask for exact object boundaries
-        obj_pixels = cv2.bitwise_and(gray_frame, gray_frame, mask=binary_mask)
+        obj_pixels = cv2.bitwise_and(frame, frame, mask=binary_mask)
         area = np.count_nonzero(binary_mask)
         if area < min_area:
             return False
@@ -106,23 +106,23 @@ class SpaceObjectDetector:
         if aspect > MAX_ASPECT_RATIO or aspect < (1.0 / MAX_ASPECT_RATIO):
             return False
         
-        # Get brightness using exact binary mask boundaries
+        # Get brightness using max RGB values
         masked_pixels = obj_pixels[binary_mask > 0]
         if len(masked_pixels) == 0:
             return False
-        obj_brightness = float(np.mean(masked_pixels))
+        obj_brightness = float(np.mean(np.max(masked_pixels, axis=1)))
         
-        # Get background from dilated region outside mask
+        # Get background from dilated region outside mask using max RGB
         kernel = np.ones((3,3), np.uint8)
         bg_mask = cv2.dilate(binary_mask, kernel, iterations=2)
         bg_mask = cv2.bitwise_xor(bg_mask, binary_mask)
-        bg_pixels = cv2.bitwise_and(gray_frame, gray_frame, mask=bg_mask)
+        bg_pixels = cv2.bitwise_and(frame, frame, mask=bg_mask)
         
         # Check if we have valid background pixels
         masked_bg = bg_pixels[bg_mask > 0]
         if len(masked_bg) == 0:
             return False
-        bg_brightness = float(np.mean(masked_bg))
+        bg_brightness = float(np.mean(np.max(masked_bg, axis=1)))
         
         contrast = abs(obj_brightness - bg_brightness)
         
@@ -141,13 +141,15 @@ class SpaceObjectDetector:
         x1, y1, x2, y2 = space_box
         roi = frame[y1:y2, x1:x2]
         
-        # Convert ROI to grayscale and apply Gaussian blur
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        # Apply Gaussian blur to color image
+        blurred = cv2.GaussianBlur(roi, (5, 5), 0)
         
-        # Create masks for brightness detection
-        _, lower_mask = cv2.threshold(blurred, 15, 255, cv2.THRESH_BINARY)
-        _, upper_mask = cv2.threshold(blurred, 240, 255, cv2.THRESH_BINARY_INV)
+        # Get max value across RGB channels
+        max_values = np.max(blurred, axis=2)
+        
+        # Create masks for brightness detection using max RGB value
+        _, lower_mask = cv2.threshold(max_values, MIN_BRIGHTNESS, 255, cv2.THRESH_BINARY)
+        _, upper_mask = cv2.threshold(max_values, MAX_BRIGHTNESS, 255, cv2.THRESH_BINARY_INV)
         mask = cv2.bitwise_and(lower_mask, upper_mask)
         
         # Clean up mask
@@ -175,7 +177,7 @@ class SpaceObjectDetector:
         # Process each contour
         for contour in contours:
             # Skip if we've already found 4 valid detections
-            if valid_detections >= 4:
+            if valid_detections >= 3:
                 break
             
             # Get contour properties
@@ -189,22 +191,22 @@ class SpaceObjectDetector:
                 continue
             
             # Create binary mask for exact object boundaries
-            obj_mask = np.zeros_like(gray)
+            obj_mask = np.zeros_like(mask)
             cv2.drawContours(obj_mask, [contour], -1, 255, -1)
             
             # Only proceed if analyze_object approves this contour
-            if not self.analyze_object(gray, obj_mask, w, h):
+            if not self.analyze_object(roi, obj_mask, w, h):
                 continue
             
-            # Calculate metrics for display
-            obj_pixels = cv2.bitwise_and(gray, gray, mask=obj_mask)
-            obj_brightness = np.mean(obj_pixels[obj_mask > 0])
+            # Calculate metrics for display using max RGB values
+            obj_pixels = cv2.bitwise_and(roi, roi, mask=obj_mask)
+            obj_brightness = np.mean(np.max(obj_pixels[obj_mask > 0], axis=1))
             
-            # Calculate background brightness from dilated region outside mask
+            # Calculate background brightness from dilated region outside mask using max RGB
             bg_mask = cv2.dilate(obj_mask, kernel, iterations=2)
             bg_mask = cv2.bitwise_xor(bg_mask, obj_mask)
-            bg_pixels = cv2.bitwise_and(gray, gray, mask=bg_mask)
-            bg_brightness = np.mean(bg_pixels[bg_mask > 0])
+            bg_pixels = cv2.bitwise_and(roi, roi, mask=bg_mask)
+            bg_brightness = np.mean(np.max(bg_pixels[bg_mask > 0], axis=1))
             
             contrast = abs(obj_brightness - bg_brightness)
             
@@ -316,9 +318,9 @@ class SpaceObjectDetector:
                 # Get ISS and panel boxes for filtering
                 #iss_boxes = self.last_rcnn_results['boxes'].get('iss', [])
                 panel_boxes = self.last_rcnn_results['boxes'].get('panel', [])
-                
+                iss_boxes = self.last_rcnn_results['boxes'].get('iss', [])
                 # If we have lens flare boxes, filter anomalies that overlap with them
-                if (lf_boxes or panel_boxes) and all_anomalies:
+                if (lf_boxes or panel_boxes or iss_boxes) and all_anomalies:
                     filtered_anomalies = []
                     filtered_metrics = []
                     
