@@ -101,8 +101,6 @@ def ensure_save_directory(path: str) -> int:
     Returns:
         int: Next available counter value, or 0 if error
     """
-    from SOD_Constants import RAW_SUBDIR
-    
     if not path or not isinstance(path, str):
         print("Invalid path provided")
         return 0
