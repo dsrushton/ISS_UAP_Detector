@@ -10,7 +10,7 @@ import torch
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Model Path
-MODEL_PATH = "./models/best_map_model.pth"
+MODEL_PATH = "./best_map_model.pth"
 
 # Class Definitions
 CLASS_NAMES = [
