@@ -18,7 +18,8 @@ from SOD_Constants import (
     MIN_BRIGHTNESS, MAX_BRIGHTNESS, CROPPED_WIDTH,
     RCNN_DETECTION_CYCLE, MIN_CONTOUR_WIDTH, MIN_CONTOUR_HEIGHT,
     MAX_CONTOUR_WIDTH, MAX_CONTOUR_HEIGHT, MIN_CONTOUR_AREA,
-    MAX_ASPECT_RATIO, MAX_BG_BRIGHTNESS, MIN_CONTRAST, MAX_LENS_FLARES
+    MAX_ASPECT_RATIO, MAX_BG_BRIGHTNESS, MIN_CONTRAST, MAX_LENS_FLARES,
+    DARKNESS_AREA_THRESHOLD
 )
 
 @dataclass
@@ -81,7 +82,7 @@ class SpaceObjectDetector:
         self.consecutive_lf = 0
         self.lf_pause_until = 0  # Track when to resume after lens flares
 
-    def analyze_object(self, gray_frame: np.ndarray, binary_mask: np.ndarray, w: int, h: int) -> bool:
+    def analyze_object(self, frame: np.ndarray, binary_mask: np.ndarray, w: int, h: int) -> bool:
         """Analyze if object passes detection criteria"""
         # STRICT SIZE REQUIREMENTS FIRST
         # Minimum dimensions
@@ -97,7 +98,7 @@ class SpaceObjectDetector:
         min_area = MIN_CONTOUR_AREA if aspect > 3 else MIN_CONTOUR_AREA * 1.5
         
         # Use the binary mask for exact object boundaries
-        obj_pixels = cv2.bitwise_and(gray_frame, gray_frame, mask=binary_mask)
+        obj_pixels = cv2.bitwise_and(frame, frame, mask=binary_mask)
         area = np.count_nonzero(binary_mask)
         if area < min_area:
             return False
@@ -106,23 +107,23 @@ class SpaceObjectDetector:
         if aspect > MAX_ASPECT_RATIO or aspect < (1.0 / MAX_ASPECT_RATIO):
             return False
         
-        # Get brightness using exact binary mask boundaries
+        # Get brightness using max RGB values
         masked_pixels = obj_pixels[binary_mask > 0]
         if len(masked_pixels) == 0:
             return False
-        obj_brightness = float(np.mean(masked_pixels))
+        obj_brightness = float(np.mean(np.max(masked_pixels, axis=1)))
         
-        # Get background from dilated region outside mask
+        # Get background from dilated region outside mask using max RGB
         kernel = np.ones((3,3), np.uint8)
         bg_mask = cv2.dilate(binary_mask, kernel, iterations=2)
         bg_mask = cv2.bitwise_xor(bg_mask, binary_mask)
-        bg_pixels = cv2.bitwise_and(gray_frame, gray_frame, mask=bg_mask)
+        bg_pixels = cv2.bitwise_and(frame, frame, mask=bg_mask)
         
         # Check if we have valid background pixels
         masked_bg = bg_pixels[bg_mask > 0]
         if len(masked_bg) == 0:
             return False
-        bg_brightness = float(np.mean(masked_bg))
+        bg_brightness = float(np.mean(np.max(masked_bg, axis=1)))
         
         contrast = abs(obj_brightness - bg_brightness)
         
@@ -141,13 +142,15 @@ class SpaceObjectDetector:
         x1, y1, x2, y2 = space_box
         roi = frame[y1:y2, x1:x2]
         
-        # Convert ROI to grayscale and apply Gaussian blur
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        # Apply Gaussian blur to color image
+        blurred = cv2.GaussianBlur(roi, (5, 5), 0)
         
-        # Create masks for brightness detection
-        _, lower_mask = cv2.threshold(blurred, 15, 255, cv2.THRESH_BINARY)
-        _, upper_mask = cv2.threshold(blurred, 240, 255, cv2.THRESH_BINARY_INV)
+        # Get max value across RGB channels
+        max_values = np.max(blurred, axis=2)
+        
+        # Create masks for brightness detection using max RGB value
+        _, lower_mask = cv2.threshold(max_values, MIN_BRIGHTNESS, 255, cv2.THRESH_BINARY)
+        _, upper_mask = cv2.threshold(max_values, MAX_BRIGHTNESS, 255, cv2.THRESH_BINARY_INV)
         mask = cv2.bitwise_and(lower_mask, upper_mask)
         
         # Clean up mask
@@ -175,7 +178,7 @@ class SpaceObjectDetector:
         # Process each contour
         for contour in contours:
             # Skip if we've already found 4 valid detections
-            if valid_detections >= 4:
+            if valid_detections >= 3:
                 break
             
             # Get contour properties
@@ -189,22 +192,22 @@ class SpaceObjectDetector:
                 continue
             
             # Create binary mask for exact object boundaries
-            obj_mask = np.zeros_like(gray)
+            obj_mask = np.zeros_like(mask)
             cv2.drawContours(obj_mask, [contour], -1, 255, -1)
             
             # Only proceed if analyze_object approves this contour
-            if not self.analyze_object(gray, obj_mask, w, h):
+            if not self.analyze_object(roi, obj_mask, w, h):
                 continue
             
-            # Calculate metrics for display
-            obj_pixels = cv2.bitwise_and(gray, gray, mask=obj_mask)
-            obj_brightness = np.mean(obj_pixels[obj_mask > 0])
+            # Calculate metrics for display using max RGB values
+            obj_pixels = cv2.bitwise_and(roi, roi, mask=obj_mask)
+            obj_brightness = np.mean(np.max(obj_pixels[obj_mask > 0], axis=1))
             
-            # Calculate background brightness from dilated region outside mask
+            # Calculate background brightness from dilated region outside mask using max RGB
             bg_mask = cv2.dilate(obj_mask, kernel, iterations=2)
             bg_mask = cv2.bitwise_xor(bg_mask, obj_mask)
-            bg_pixels = cv2.bitwise_and(gray, gray, mask=bg_mask)
-            bg_brightness = np.mean(bg_pixels[bg_mask > 0])
+            bg_pixels = cv2.bitwise_and(roi, roi, mask=bg_mask)
+            bg_brightness = np.mean(np.max(bg_pixels[bg_mask > 0], axis=1))
             
             contrast = abs(obj_brightness - bg_brightness)
             
@@ -258,7 +261,7 @@ class SpaceObjectDetector:
                 for box in self.last_rcnn_results['boxes']['td']:
                     x1, y1, x2, y2 = box
                     td_area = (x2 - x1) * (y2 - y1)
-                    if td_area > frame_area * 0.40:  # Darkness threshold
+                    if td_area > frame_area * DARKNESS_AREA_THRESHOLD:  # Use constant instead of hardcoded value
                         results.darkness_detected = True
                         break
             
@@ -267,15 +270,13 @@ class SpaceObjectDetector:
                 return results
             
             # Check lens flare count
-            skip_contour_detection = False
             if 'lf' in self.last_rcnn_results['boxes']:
                 lf_count = len(self.last_rcnn_results['boxes']['lf'])
                 if lf_count >= MAX_LENS_FLARES:
-                    skip_contour_detection = True
-                    results.metadata['skipped_contours_lf'] = True
+                    results.metadata['skip_save'] = 'too_many_lens_flares'
             
-            # Only proceed with anomaly detection if we have a space region and not skipping due to lens flares
-            if 'space' in results.rcnn_boxes and not skip_contour_detection:
+            # Only proceed with anomaly detection if we have a space region
+            if 'space' in results.rcnn_boxes:
                 space_boxes = sorted(results.rcnn_boxes['space'], 
                                   key=lambda box: box[1])  # Sort by y1 coordinate
                 
@@ -315,24 +316,47 @@ class SpaceObjectDetector:
                 # Get lens flare boxes for filtering
                 lf_boxes = self.last_rcnn_results['boxes'].get('lf', [])
                 
+                # Get ISS and panel boxes for filtering
+                panel_boxes = self.last_rcnn_results['boxes'].get('panel', [])
+                iss_boxes = self.last_rcnn_results['boxes'].get('iss', [])
+                
                 # If we have lens flare boxes, filter anomalies that overlap with them
-                if lf_boxes and all_anomalies:
+                if (lf_boxes or panel_boxes or iss_boxes) and all_anomalies:
                     filtered_anomalies = []
                     filtered_metrics = []
                     
                     for i, (ax, ay, aw, ah) in enumerate(all_anomalies):
-                        overlaps_lf = False
+                        overlaps = False
+                        
+                        # Check lens flare overlap
                         for lf_box in lf_boxes:
-                            # Check for overlap
                             lf_x1, lf_y1, lf_x2, lf_y2 = lf_box
                             if (ax < lf_x2 and ax + aw > lf_x1 and
                                 ay < lf_y2 and ay + ah > lf_y1):
-                                overlaps_lf = True
+                                overlaps = True
                                 break
                         
-                        if not overlaps_lf:
-                            filtered_anomalies.append((ax, ay, aw, ah))
-                            if len(all_metrics) > i:
+                        # Check ISS overlap
+                        #if not overlaps:
+                        #    for iss_box in iss_boxes:
+                        #        iss_x1, iss_y1, iss_x2, iss_y2 = iss_box
+                        #        if (ax < iss_x2 and ax + aw > iss_x1 and
+                        #            ay < iss_y2 and ay + ah > iss_y1):
+                        #        overlaps = True
+                        #        break
+                        
+                        # Check panel overlap
+                        if not overlaps:
+                            for panel_box in panel_boxes:
+                                panel_x1, panel_y1, panel_x2, panel_y2 = panel_box
+                                if (ax < panel_x2 and ax + aw > panel_x1 and
+                                    ay < panel_y2 and ay + ah > panel_y1):
+                                    overlaps = True
+                                    break
+                        
+                        if not overlaps:
+                            filtered_anomalies.append(all_anomalies[i])
+                            if all_metrics:
                                 filtered_metrics.append(all_metrics[i])
                     
                     # Update anomalies and metrics after filtering

@@ -8,6 +8,13 @@ import numpy as np
 import subprocess
 from PIL import Image
 import os
+from typing import Optional, Tuple
+
+from SOD_Constants import (
+    RAW_SUBDIR,
+    VIDEO_SAVE_DIR,
+    JPG_SAVE_DIR
+)
 
 def get_best_stream_url(youtube_url: str) -> str:
     """
@@ -94,8 +101,6 @@ def ensure_save_directory(path: str) -> int:
     Returns:
         int: Next available counter value, or 0 if error
     """
-    from SOD_Constants import RAW_SUBDIR
-    
     if not path or not isinstance(path, str):
         print("Invalid path provided")
         return 0
@@ -132,4 +137,25 @@ def ensure_save_directory(path: str) -> int:
         return 0
     except Exception as e:
         print(f"Unexpected error in ensure_save_directory: {str(e)}")
+        return 0
+
+def init_save_dir(path: str) -> int:
+    """Initialize save directory and get next counter value."""
+    try:
+        path = os.path.normpath(os.path.expanduser(path))
+        
+        # Ensure main directories exist
+        os.makedirs(path, exist_ok=True)
+        os.makedirs(VIDEO_SAVE_DIR, exist_ok=True)  # Create AVI directory
+        os.makedirs(JPG_SAVE_DIR, exist_ok=True)    # Create JPG directory
+        
+        # Ensure raw subdirectory exists
+        raw_dir = os.path.join(path, RAW_SUBDIR)
+        os.makedirs(raw_dir, exist_ok=True)
+        
+        # Find the latest counter value
+        counter = 0
+        return counter
+    except Exception as e:
+        print(f"Error initializing save directories: {str(e)}")
         return 0

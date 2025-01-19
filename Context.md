@@ -3,6 +3,8 @@
 ## Project Overview - Especially important.
 This system is designed to detect and analyze objects in space footage, from the International Space Station (ISS) live feed. It combines deep learning (RCNN) with first principles analysis to identify various space objects and anomalies. OUR AIM IS TO DETECT OBJECTS IN THE 'space' RCNN BOUNDING BOX USING CONTOUR AND BRIGHTNESS ANALYSIS. THERE ARE MANY KNOWN PROSAIC OBJECTS TO AVOID EG. 'iss', 'lf', 'panel', 'sun' WITHIN THAT SPACE THAT CAN LOOK SIMILAR SO WE'RE RIGOUROUS IN OUR BOUNDING BOX DETECTION AWARENESS, AND ABOVE ALL SEARCHING FOR SOLID OBJECTS AGAINST THE BLACK BACKGROUND OF 'space'. 
 
+--- A realtime parameter dashboard is a mdeium-term priority. And Test_Image_Collection short-term.
+
 ## System Architecture
 
 ### Core Components
@@ -174,7 +176,29 @@ Fixed Issues:
 - Keep all metadata for analysis and debugging
 - Maintain synchronized file naming and organization
 
+
+
+## Recent Updates (January 2024):
+- Improved contour filtering:
+  1. Added border margin check (5px) to filter edge detections
+  2. Implemented filtering for contours overlapping with lens flares and panels
+  3. Added metadata tracking for skipped saves
+- Enhanced visualization:
+  1. Increased color vibrancy in debug view (alpha 0.9)
+  2. Expanded bounding boxes by 2px for better visibility
+  3. Standardized bright red color for detections
+- Detection improvements:
+  1. Now searching all space boxes while displaying highest one
+  2. Added duplicate detection prevention using center points
+  3. Improved handling of multiple lens flares
+  4. Switched to max RGB value for brightness detection (better detection of blue/red objects)
+- Configuration updates:
+  1. Moved lens flare threshold (MAX_LENS_FLARES = 3) to constants
+  2. Updated save interval to 2.0 seconds
+  3. Improved test image handling with proper 939x720 cropping
+  4. Added automatic creation of required directories (AVI/JPG/Burst_raw)
+
 ## Current Status:
 Continuing to refine detection algorithms for best captures
 Hunting down bugs and inefficiency
-
+A realtime parameter dashboard is a mdeium-term priority. Test_Image_Collection short-term.

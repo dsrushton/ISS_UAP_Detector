@@ -58,11 +58,11 @@ class DisplayManager:
                 roi_x = x - space_box[0]
                 roi_y = y - space_box[1]
                 
-                # Draw bounding box
+                # Draw bounding box - expanded by 2 pixels in each direction
                 cv2.rectangle(roi_section, 
-                            (roi_x, roi_y), 
-                            (roi_x + w, roi_y + h), 
-                            ANOMALY_BOX_COLOR, 2)
+                            (roi_x - 2, roi_y - 2),  # Top-left expanded
+                            (roi_x + w + 2, roi_y + h + 2),  # Bottom-right expanded
+                            ANOMALY_BOX_COLOR, 3)
                 
                 # Find matching metrics
                 metric = metrics_lookup.get((roi_x, roi_y))
@@ -72,9 +72,9 @@ class DisplayManager:
                               (roi_x, roi_y - 5),
                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, ANOMALY_BOX_COLOR, 1)
         
-        # Blend overlay with debug view
-        alpha = 0.7
-        cv2.addWeighted(debug_view, alpha, overlay, 1 - alpha, 0, debug_view)
+        # Blend overlay with debug view - use higher alpha for more vibrant colors
+        alpha = 0.9  # Increased from 0.7 to 0.9
+        cv2.addWeighted(debug_view, alpha, overlay, 1.0, 0, debug_view)  # Changed overlay weight to 1.0
         
         return debug_view
 

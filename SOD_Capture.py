@@ -141,6 +141,11 @@ class CaptureManager:
                 if filename is None:  # Too soon to save
                     return
             
+            # Skip save if metadata indicates we should
+            if hasattr(debug_view, 'metadata') and debug_view.metadata.get('skip_save'):
+                print(f"\nSkipping save: {debug_view.metadata['skip_save']}")
+                return
+            
             # Create combined image if debug view provided
             if debug_view is not None:
                 debug_h, debug_w = debug_view.shape[:2]
