@@ -18,7 +18,8 @@ from SOD_Constants import (
     MIN_BRIGHTNESS, MAX_BRIGHTNESS, CROPPED_WIDTH,
     RCNN_DETECTION_CYCLE, MIN_CONTOUR_WIDTH, MIN_CONTOUR_HEIGHT,
     MAX_CONTOUR_WIDTH, MAX_CONTOUR_HEIGHT, MIN_CONTOUR_AREA,
-    MAX_ASPECT_RATIO, MAX_BG_BRIGHTNESS, MIN_CONTRAST, MAX_LENS_FLARES
+    MAX_ASPECT_RATIO, MAX_BG_BRIGHTNESS, MIN_CONTRAST, MAX_LENS_FLARES,
+    DARKNESS_AREA_THRESHOLD
 )
 
 @dataclass
@@ -260,7 +261,7 @@ class SpaceObjectDetector:
                 for box in self.last_rcnn_results['boxes']['td']:
                     x1, y1, x2, y2 = box
                     td_area = (x2 - x1) * (y2 - y1)
-                    if td_area > frame_area * 0.40:  # Darkness threshold
+                    if td_area > frame_area * DARKNESS_AREA_THRESHOLD:  # Use constant instead of hardcoded value
                         results.darkness_detected = True
                         break
             
@@ -316,9 +317,9 @@ class SpaceObjectDetector:
                 lf_boxes = self.last_rcnn_results['boxes'].get('lf', [])
                 
                 # Get ISS and panel boxes for filtering
-                #iss_boxes = self.last_rcnn_results['boxes'].get('iss', [])
                 panel_boxes = self.last_rcnn_results['boxes'].get('panel', [])
                 iss_boxes = self.last_rcnn_results['boxes'].get('iss', [])
+                
                 # If we have lens flare boxes, filter anomalies that overlap with them
                 if (lf_boxes or panel_boxes or iss_boxes) and all_anomalies:
                     filtered_anomalies = []
@@ -341,8 +342,8 @@ class SpaceObjectDetector:
                         #        iss_x1, iss_y1, iss_x2, iss_y2 = iss_box
                         #        if (ax < iss_x2 and ax + aw > iss_x1 and
                         #            ay < iss_y2 and ay + ah > iss_y1):
-                        #            overlaps = True
-                        #            break
+                        #        overlaps = True
+                        #        break
                         
                         # Check panel overlap
                         if not overlaps:
@@ -354,8 +355,8 @@ class SpaceObjectDetector:
                                     break
                         
                         if not overlaps:
-                            filtered_anomalies.append((ax, ay, aw, ah))
-                            if len(all_metrics) > i:
+                            filtered_anomalies.append(all_anomalies[i])
+                            if all_metrics:
                                 filtered_metrics.append(all_metrics[i])
                     
                     # Update anomalies and metrics after filtering

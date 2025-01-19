@@ -132,7 +132,7 @@ class SpaceObjectDetectionSystem:
                     max(frame.shape[0], debug_view.shape[0])
                 )
                 if self.video.start_recording(frame_size):
-                    print(f"\nStarted recording: {self.video.current_video_number:05d}.mp4")
+                    print(f"\nStarted recording: {self.video.current_video_number:05d}.avi")
                     # Start tracking this video number for JPGs
                     self.capture.start_new_video(self.video.current_video_number)
                     # Save first detection frame without interval check
