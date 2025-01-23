@@ -16,10 +16,13 @@ from SOD_Constants import (
     CROPPED_WIDTH,
     TEST_IMAGE_PATH,
     RECONNECT_DELAY,
-    VIDEO_SAVE_DIR
+    VIDEO_SAVE_DIR,
+    VIDEO_FPS,
+    BUFFER_SECONDS
 )
 from SOD_Utils import get_best_stream_url, crop_frame
 from SOD_Video import VideoManager
+from SOD_Logger import StatusLogger
 
 class SpaceObjectDetectionSystem:
     """
@@ -37,6 +40,7 @@ class SpaceObjectDetectionSystem:
         self.detector = SpaceObjectDetector()
         self.display = DisplayManager()
         self.capture = CaptureManager()
+        self.logger = StatusLogger()
         
         # State tracking
         self.frame_count: int = 0
@@ -58,10 +62,16 @@ class SpaceObjectDetectionSystem:
             bool: True if initialization successful, False otherwise
         """
         try:
+            # Start the logger
+            self.logger.start()
+            
             # Initialize the model
             if not self.detector.initialize_model():
                 print("Failed to initialize detector model")
                 return False
+                
+            # Set logger for detector
+            self.detector.set_logger(self.logger)
                 
             # Initialize capture system
             if not self.capture.initialize():
@@ -88,6 +98,8 @@ class SpaceObjectDetectionSystem:
             True if processed successfully
         """
         try:
+            iteration_start = time.time()
+            
             # Handle test frame injection
             if self.inject_test_frames > 0:
                 if self.current_test_image < len(self.test_images):
@@ -104,16 +116,24 @@ class SpaceObjectDetectionSystem:
                 frame = crop_frame(frame)
             
             # Run detection
-            detections = self.detector.process_frame(frame)
+            detection_start = time.time()
+            detections = self.detector.process_frame(frame, self.display.avoid_boxes)
+            self.logger.log_operation_time('detection', time.time() - detection_start)
+            
             if detections is None:
-                return None
+                self.logger.log_iteration(False, error_msg="Failed to process frame")
+                print("\nError processing frame - continuing to next frame")
+                return True
             
             # Update display
+            display_start = time.time()
             annotated_frame = self.display.draw_detections(frame, detections)
+            self.logger.log_operation_time('display_update', time.time() - display_start)
             
             # Create debug view if we have a space region
             debug_view = None
             if detections.space_box is not None:
+                debug_start = time.time()
                 x1, y1, x2, y2 = detections.space_box
                 roi = frame[y1:y2, x1:x2]
                 debug_view = self.display.create_debug_view(
@@ -123,22 +143,26 @@ class SpaceObjectDetectionSystem:
                     detections.anomalies,
                     detections.metadata
                 )
+                self.logger.log_operation_time('debug_view', time.time() - debug_start)
+            
+            # Add to video buffer
+            buffer_start = time.time()
+            self.video.add_to_buffer(frame, annotated_frame, debug_view)
+            self.logger.log_operation_time('video_buffer', time.time() - buffer_start)
             
             # Handle video recording
-            if detections.anomalies and not self.video.recording:
-                # Start new recording
-                frame_size = (frame.shape[1], frame.shape[0]) if debug_view is None else (
-                    frame.shape[1] + debug_view.shape[1],
-                    max(frame.shape[0], debug_view.shape[0])
-                )
-                if self.video.start_recording(frame_size):
+            recording_start = time.time()
+            if detections.anomalies and not self.video.recording and not detections.metadata.get('skip_save'):
+                # Start new recording with combined frame size
+                frame_size = (frame.shape[1] + (debug_view.shape[1] if debug_view is not None else 0),
+                             max(frame.shape[0], debug_view.shape[0] if debug_view is not None else 0))
+                if self.video.start_recording(frame_size, debug_view):
                     print(f"\nStarted recording: {self.video.current_video_number:05d}.avi")
                     # Start tracking this video number for JPGs
                     self.capture.start_new_video(self.video.current_video_number)
                     # Save first detection frame without interval check
-                    if not detections.metadata.get('skip_save'):
-                        self.capture.save_detection(annotated_frame, debug_view, check_interval=False)
-            
+                    self.capture.save_detection(annotated_frame, debug_view, check_interval=False)
+
             # Update recording if active
             if self.video.recording:
                 if debug_view is not None:
@@ -156,7 +180,12 @@ class SpaceObjectDetectionSystem:
                         self.capture.save_detection(annotated_frame, debug_view)
                 else:
                     self.video.update_recording(annotated_frame, detections.anomalies)
-            
+            self.logger.log_operation_time('video_recording', time.time() - recording_start)
+
+            # Log successful iteration
+            self.logger.log_iteration(True, had_detection=bool(detections.anomalies))
+            self.logger.log_operation_time('total_iteration', time.time() - iteration_start)
+
             # Handle burst capture
             if self.burst_remaining > 0:
                 self.capture.save_frame(frame, debug_view)
@@ -177,6 +206,9 @@ class SpaceObjectDetectionSystem:
                 self.inject_test_frames = 100
             elif key == ord('b'):
                 self.burst_remaining = BURST_CAPTURE_FRAMES
+            elif key == ord('c'):
+                self.display.avoid_boxes = []  # Clear avoid boxes
+                print("\nCleared avoid boxes")
             
             return True
             

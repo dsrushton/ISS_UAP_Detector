@@ -85,24 +85,24 @@ VIDEO_FPS = 30
 
 # Anomaly Detection Parameters
 #Try using max_value RGB instead of weighted grayscale
-MIN_BRIGHTNESS = 23
+MIN_BRIGHTNESS = 26
 MAX_BRIGHTNESS = 200
 SAVE_INTERVAL = 2.0  # Seconds between saves
 
 # Detection Parameters
-MAX_BG_BRIGHTNESS = 10
+MAX_BG_BRIGHTNESS = 23
 MIN_CONTRAST = 6
 MIN_CONTOUR_WIDTH = 5
 MIN_CONTOUR_HEIGHT = 5
-MAX_CONTOUR_WIDTH = 120
-MAX_CONTOUR_HEIGHT = 120
+MAX_CONTOUR_WIDTH = 200
+MAX_CONTOUR_HEIGHT = 200
 MIN_CONTOUR_AREA = 25
 MAX_ASPECT_RATIO = 8.0
 
 # RCNN Parameters
 MAX_RCNN_BOXES = 10
 DARKNESS_AREA_THRESHOLD = 0.25 #Total darkness area threshold
-RCNN_DETECTION_CYCLE = 10 #Frame interval for RCNN detection
+RCNN_DETECTION_CYCLE = 54 #Frame interval for RCNN detection
 MAX_LENS_FLARES = 3  # Maximum number of lens flares before skipping contour detection
 
 # Display Parameters
@@ -111,6 +111,10 @@ CONTOUR_COLOR = (0, 255, 0)  # Green
 ANOMALY_BOX_COLOR = (0, 0, 255)  # Bright Red
 NOFEED_TEXT_COLOR = (128, 0, 128)  # Purple
 DARKNESS_OVERLAY_COLOR = (0, 0, 0)  # Black
+
+# Avoid Box Parameters
+AVOID_BOX_COLOR = (128, 0, 128)  # Blue
+AVOID_BOX_THICKNESS = 2
 
 # Save Parameters
 RECONNECT_DELAY = 5.0  # Seconds to wait before reconnecting
