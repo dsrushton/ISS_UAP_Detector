@@ -178,6 +178,10 @@ Fixed Issues:
 
 
 
+
+
+
+
 ## Recent Updates (January 2024):
 - Improved contour filtering:
   1. Added border margin check (5px) to filter edge detections
@@ -198,7 +202,19 @@ Fixed Issues:
   3. Improved test image handling with proper 939x720 cropping
   4. Added automatic creation of required directories (AVI/JPG/Burst_raw)
 
+  ## Recent Optimizations
+1. Adjusted RCNN cycle to match framerate (54 frames)
+2. Balanced detection parameters for accuracy vs. speed
+3. Optimized video buffer operations
+
 ## Current Status:
 Continuing to refine detection algorithms for best captures
 Hunting down bugs and inefficiency
 A realtime parameter dashboard is a mdeium-term priority. Test_Image_Collection short-term.
+
+### Performance Metrics
+- Frame Processing: 12-13ms average
+- Display Updates: <1ms
+- Video Operations: <1ms
+- Detection Analysis: 6-7ms for mask creation
+- RCNN Operations: ~95ms (once per second)

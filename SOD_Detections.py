@@ -62,6 +62,7 @@ class SpaceObjectDetector:
         self.transform = None
         self.rcnn_cycle = rcnn_cycle
         self.frame_count = 0
+        self.logger = None
         
         # Initialize with empty results
         self.last_rcnn_results = {
@@ -81,6 +82,10 @@ class SpaceObjectDetector:
         
         self.consecutive_lf = 0
         self.lf_pause_until = 0  # Track when to resume after lens flares
+
+    def set_logger(self, logger):
+        """Set the logger instance."""
+        self.logger = logger
 
     def analyze_object(self, frame: np.ndarray, binary_mask: np.ndarray, w: int, h: int) -> bool:
         """Analyze if object passes detection criteria"""
@@ -137,12 +142,14 @@ class SpaceObjectDetector:
         
         return True
 
-    def detect_anomalies(self, frame: np.ndarray, space_box: tuple) -> DetectionResults:
+    def detect_anomalies(self, frame: np.ndarray, space_box: tuple, avoid_boxes: List[Tuple[int, int, int, int]] = None) -> DetectionResults:
+        """Find anomalies in space region."""
         results = DetectionResults()
         x1, y1, x2, y2 = space_box
         roi = frame[y1:y2, x1:x2]
         
-        # Apply Gaussian blur to color image
+        # Apply Gaussian blur and create masks
+        mask_start = time.time()
         blurred = cv2.GaussianBlur(roi, (5, 5), 0)
         
         # Get max value across RGB channels
@@ -157,8 +164,10 @@ class SpaceObjectDetector:
         kernel = np.ones((3,3), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        self.logger.log_operation_time('mask_creation', time.time() - mask_start)
         
         # Find contours
+        contour_start = time.time()
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         results.contours = contours
         
@@ -166,6 +175,7 @@ class SpaceObjectDetector:
         if len(contours) > 10:
             contours = sorted(contours, key=cv2.contourArea, reverse=True)[:10]
             results.metadata['max_contours_reached'] = True
+        self.logger.log_operation_time('contour_finding', time.time() - contour_start)
         
         anomalies = []
         anomaly_metrics = []
@@ -176,6 +186,7 @@ class SpaceObjectDetector:
         BORDER_MARGIN = 5  # How many pixels from border to consider "touching"
         
         # Process each contour
+        analysis_start = time.time()
         for contour in contours:
             # Skip if we've already found 4 valid detections
             if valid_detections >= 3:
@@ -200,6 +211,7 @@ class SpaceObjectDetector:
                 continue
             
             # Calculate metrics for display using max RGB values
+            brightness_start = time.time()
             obj_pixels = cv2.bitwise_and(roi, roi, mask=obj_mask)
             obj_brightness = np.mean(np.max(obj_pixels[obj_mask > 0], axis=1))
             
@@ -210,6 +222,7 @@ class SpaceObjectDetector:
             bg_brightness = np.mean(np.max(bg_pixels[bg_mask > 0], axis=1))
             
             contrast = abs(obj_brightness - bg_brightness)
+            self.logger.log_operation_time('brightness_check', time.time() - brightness_start)
             
             # Store metrics for this anomaly
             metrics = {
@@ -222,9 +235,29 @@ class SpaceObjectDetector:
                 'area': w * h
             }
             
-            anomalies.append((x + x1, y + y1, w, h))
+            # Convert to absolute coordinates
+            abs_x = x + x1
+            abs_y = y + y1
+            
+            # Skip if in any avoid box
+            box_start = time.time()
+            if avoid_boxes:
+                in_avoid = False
+                for avoid_box in avoid_boxes:
+                    ax1, ay1, ax2, ay2 = avoid_box
+                    if (abs_x < ax2 and abs_x + w > ax1 and
+                        abs_y < ay2 and abs_y + h > ay1):
+                        in_avoid = True
+                        break
+                if in_avoid:
+                    continue
+            self.logger.log_operation_time('box_filtering', time.time() - box_start)
+            
+            anomalies.append((abs_x, abs_y, w, h))
             anomaly_metrics.append(metrics)
             valid_detections += 1
+        
+        self.logger.log_operation_time('contour_analysis', time.time() - analysis_start)
         
         # Store results - preserve any existing metadata
         if 'anomaly_metrics' not in results.metadata:
@@ -239,7 +272,7 @@ class SpaceObjectDetector:
         
         return results
 
-    def process_frame(self, frame: np.ndarray) -> Optional[DetectionResults]:
+    def process_frame(self, frame: np.ndarray, avoid_boxes: List[Tuple[int, int, int, int]] = None) -> Optional[DetectionResults]:
         """Process frame through detection pipeline."""
         try:
             self.frame_count += 1
@@ -292,7 +325,7 @@ class SpaceObjectDetector:
                 # Process each space box
                 for space_box in space_boxes:
                     # Run anomaly detection on this box
-                    box_results = self.detect_anomalies(frame, space_box)
+                    box_results = self.detect_anomalies(frame, space_box, avoid_boxes)
                     
                     # Check each anomaly to avoid duplicates (if boxes overlap)
                     for i, (x, y, w, h) in enumerate(box_results.anomalies):
@@ -337,13 +370,13 @@ class SpaceObjectDetector:
                                 break
                         
                         # Check ISS overlap
-                        #if not overlaps:
-                        #    for iss_box in iss_boxes:
-                        #        iss_x1, iss_y1, iss_x2, iss_y2 = iss_box
-                        #        if (ax < iss_x2 and ax + aw > iss_x1 and
-                        #            ay < iss_y2 and ay + ah > iss_y1):
-                        #        overlaps = True
-                        #        break
+                        if not overlaps:
+                            for iss_box in iss_boxes:
+                                iss_x1, iss_y1, iss_x2, iss_y2 = iss_box
+                                if (ax < iss_x2 and ax + aw > iss_x1 and
+                                    ay < iss_y2 and ay + ah > iss_y1):
+                                    overlaps = True
+                                    break
                         
                         # Check panel overlap
                         if not overlaps:
@@ -412,15 +445,21 @@ class SpaceObjectDetector:
 
     def _run_rcnn_detection(self, frame: np.ndarray) -> Dict:
         """Run RCNN detection on a frame."""
+        start = time.time()
+        
         # Convert frame for RCNN
         img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         img_tensor = self.transform(img_pil).unsqueeze(0).to(DEVICE)
+        self.logger.log_operation_time('rcnn_prep', time.time() - start)
         
         # Run detection
+        inference_start = time.time()
         with torch.no_grad():
             predictions = self.model(img_tensor)[0]
+        self.logger.log_operation_time('rcnn_inference', time.time() - inference_start)
         
         # Process predictions
+        postprocess_start = time.time()
         boxes = predictions['boxes'].cpu().numpy().astype(np.int32)
         labels = predictions['labels'].cpu().numpy()
         scores = predictions['scores'].cpu().numpy()
@@ -459,6 +498,7 @@ class SpaceObjectDetector:
                 results['boxes'][class_name].append(box)
                 results['scores'][class_name].append(score)
         
+        self.logger.log_operation_time('rcnn_postprocess', time.time() - postprocess_start)
         return results
 
 

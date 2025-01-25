@@ -9,7 +9,8 @@ from typing import Dict, List, Tuple, Optional
 
 from SOD_Constants import (
     CLASS_COLORS, CLASS_NAMES, CROPPED_WIDTH,
-    DEBUG_VIEW_ENABLED, CONTOUR_COLOR, ANOMALY_BOX_COLOR
+    DEBUG_VIEW_ENABLED, CONTOUR_COLOR, ANOMALY_BOX_COLOR,
+    AVOID_BOX_COLOR, AVOID_BOX_THICKNESS
 )
 from SOD_Detections import DetectionResults
 
@@ -20,6 +21,46 @@ class DisplayManager:
         self.debug_view = None
         self.last_save_time = 0
         
+        # Avoid box state
+        self.avoid_boxes = []
+        self.drawing_avoid_box = False
+        self.avoid_start_pos = None
+        self.current_avoid_box = None
+        
+        # Set up mouse callback
+        cv2.namedWindow('Main View')
+        cv2.setMouseCallback('Main View', self._mouse_callback)
+    
+    def _mouse_callback(self, event, x, y, flags, param):
+        """Handle mouse events for avoid box drawing."""
+        if event == cv2.EVENT_LBUTTONDOWN:
+            # Start drawing avoid box
+            self.drawing_avoid_box = True
+            self.avoid_start_pos = (x, y)
+            self.current_avoid_box = None
+            
+        elif event == cv2.EVENT_MOUSEMOVE:
+            # Update current box while drawing
+            if self.drawing_avoid_box:
+                self.current_avoid_box = (
+                    self.avoid_start_pos[0], self.avoid_start_pos[1],
+                    x - self.avoid_start_pos[0], y - self.avoid_start_pos[1]
+                )
+                
+        elif event == cv2.EVENT_LBUTTONUP:
+            # Finish drawing avoid box
+            if self.drawing_avoid_box:
+                self.drawing_avoid_box = False
+                if self.avoid_start_pos and abs(x - self.avoid_start_pos[0]) > 5 and abs(y - self.avoid_start_pos[1]) > 5:
+                    # Convert to x1,y1,x2,y2 format and ensure positive width/height
+                    x1 = min(self.avoid_start_pos[0], x)
+                    y1 = min(self.avoid_start_pos[1], y)
+                    x2 = max(self.avoid_start_pos[0], x)
+                    y2 = max(self.avoid_start_pos[1], y)
+                    self.avoid_boxes.append((x1, y1, x2, y2))
+                self.current_avoid_box = None
+                self.avoid_start_pos = None
+
     def create_debug_view(self, roi: np.ndarray, contours: list, space_box: tuple, anomalies=None, metadata=None) -> np.ndarray:
         """Create debug visualization with contours and anomalies."""
         if not DEBUG_VIEW_ENABLED:
@@ -88,7 +129,7 @@ class DisplayManager:
         elif 'nofeed' in detections.rcnn_boxes:
             return self.draw_nofeed_overlay(annotated_frame)
         
-        # Draw RCNN detections only (no anomaly boxes)
+        # Draw RCNN detections
         for class_name, boxes in detections.rcnn_boxes.items():
             scores = detections.rcnn_scores[class_name]
             color = CLASS_COLORS[class_name]
@@ -132,6 +173,18 @@ class DisplayManager:
                     color,
                     thickness
                 )
+        
+        # Draw avoid boxes
+        for box in self.avoid_boxes:
+            x1, y1, x2, y2 = box
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), AVOID_BOX_COLOR, AVOID_BOX_THICKNESS)
+            cv2.putText(annotated_frame, "AVOID", (x1, y1 - 5), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, AVOID_BOX_COLOR, 1)
+        
+        # Draw current avoid box being drawn
+        if self.drawing_avoid_box and self.current_avoid_box:
+            x, y, w, h = self.current_avoid_box
+            cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), AVOID_BOX_COLOR, AVOID_BOX_THICKNESS)
         
         return annotated_frame
 
