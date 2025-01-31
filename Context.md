@@ -210,7 +210,8 @@ Fixed Issues:
 ## Current Status:
 Continuing to refine detection algorithms for best captures
 Hunting down bugs and inefficiency
-A realtime parameter dashboard is a mdeium-term priority. Test_Image_Collection short-term.
+A realtime parameter dashboard is a mdeium-term priority. 
+
 
 ### Performance Metrics
 - Frame Processing: 12-13ms average
@@ -218,3 +219,12 @@ A realtime parameter dashboard is a mdeium-term priority. Test_Image_Collection 
 - Video Operations: <1ms
 - Detection Analysis: 6-7ms for mask creation
 - RCNN Operations: ~95ms (once per second)
+
+Three things to be built out for deployment:
+1. Near perfect capture, almost there. 
+2. Better error handling, can't crash.
+3. Real-time parameter dashboard.
+4. Multiple space window display.
+5. Livestream - seem like a simple process
+6. 
+5. 

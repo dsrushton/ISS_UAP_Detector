@@ -98,7 +98,11 @@ class VideoManager:
             self.cap.release()
             
         self.cap = cv2.VideoCapture(source)
-        return self.cap.isOpened()
+        if self.cap.isOpened():
+            # Set frame rate explicitly
+            self.cap.set(cv2.CAP_PROP_FPS, VIDEO_FPS)
+            return True
+        return False
         
     def get_frame(self) -> Tuple[bool, Optional[np.ndarray]]:
         """Get the next frame from the video source."""

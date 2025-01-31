@@ -61,61 +61,69 @@ class DisplayManager:
                 self.current_avoid_box = None
                 self.avoid_start_pos = None
 
-    def create_debug_view(self, roi: np.ndarray, contours: list, space_box: tuple, anomalies=None, metadata=None) -> np.ndarray:
-        """Create debug visualization with contours and anomalies."""
-        if not DEBUG_VIEW_ENABLED:
-            return np.zeros((roi.shape[0], roi.shape[1], 3), dtype=np.uint8)
+    def create_debug_view(self, frame: np.ndarray, space_data: list) -> np.ndarray:
+        """
+        Create debug visualization for multiple space boxes.
         
-        # Get dimensions
-        roi_h, roi_w = roi.shape[:2]
-        debug_view = np.zeros((roi_h, CROPPED_WIDTH, 3), dtype=np.uint8)
-        x_offset = (CROPPED_WIDTH - roi_w) // 2  # Center the ROI
+        Args:
+            frame: Full frame for extracting ROIs
+            space_data: List of tuples (space_box, contours, anomalies, metadata)
+        """
+        if not DEBUG_VIEW_ENABLED or not space_data:
+            return np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8)
         
-        # Copy ROI to debug view
-        debug_view[:, x_offset:x_offset+roi_w] = roi.copy()
+        # Create full-size debug view
+        debug_view = np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8)
         
-        # Check for nofeed detection
-        if metadata is not None and metadata.get('nofeed_detected', False):
-            return debug_view
-        
-        # Create overlay for contours and anomalies
+        # Create overlay for all annotations
         overlay = np.zeros_like(debug_view)
-        roi_section = overlay[:, x_offset:x_offset+roi_w]
         
-        # Draw contours in green
-        if contours is not None and len(contours) > 0:
-            cv2.drawContours(roi_section, contours, -1, CONTOUR_COLOR, 1)
-        
-        # Draw anomalies and metrics
-        if anomalies is not None and metadata is not None and 'anomaly_metrics' in metadata:
-            metrics_lookup = {}
-            for m in metadata['anomaly_metrics']:
-                pos = m['position']
-                roi_x, roi_y = pos[0] - space_box[0], pos[1] - space_box[1]
-                metrics_lookup[(roi_x, roi_y)] = m
+        # Process each space box and its data
+        for idx, (space_box, contours, anomalies, metadata) in enumerate(space_data):
+            x1, y1, x2, y2 = map(int, space_box)  # Ensure integer coordinates
             
-            for x, y, w, h in anomalies:
-                # Adjust coordinates to ROI space
-                roi_x = x - space_box[0]
-                roi_y = y - space_box[1]
-                
-                # Draw bounding box - expanded by 2 pixels in each direction
-                cv2.rectangle(roi_section, 
-                            (roi_x - 2, roi_y - 2),  # Top-left expanded
-                            (roi_x + w + 2, roi_y + h + 2),  # Bottom-right expanded
-                            ANOMALY_BOX_COLOR, 3)
-                
-                # Find matching metrics
-                metric = metrics_lookup.get((roi_x, roi_y))
-                if metric:
-                    text = f"B:{metric['obj_brightness']:.1f} C:{metric['contrast']:.1f}"
-                    cv2.putText(roi_section, text, 
-                              (roi_x, roi_y - 5),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.4, ANOMALY_BOX_COLOR, 1)
+            # Extract and copy ROI to its actual position
+            roi = frame[y1:y2, x1:x2]
+            debug_view[y1:y2, x1:x2] = roi.copy()
+            
+            # Draw contours in their actual position
+            if contours is not None and len(contours) > 0:
+                # Shift contours to their absolute position
+                shifted_contours = []
+                for contour in contours:
+                    shifted_contour = contour.copy()
+                    shifted_contour[:, :, 0] += x1  # Add x offset
+                    shifted_contour[:, :, 1] += y1  # Add y offset
+                    shifted_contours.append(shifted_contour)
+                cv2.drawContours(overlay, shifted_contours, -1, CONTOUR_COLOR, 1)
+            
+            # Draw anomalies and metrics
+            if anomalies is not None and metadata is not None and 'anomaly_metrics' in metadata:
+                for anomaly_idx, (x, y, w, h) in enumerate(anomalies):
+                    # Draw bounding box - expanded by 2 pixels in each direction
+                    cv2.rectangle(overlay, 
+                                (x - 2, y - 2),  # Top-left expanded
+                                (x + w + 2, y + h + 2),  # Bottom-right expanded
+                                ANOMALY_BOX_COLOR, 3)
+                    
+                    # Find matching metrics
+                    if 'anomaly_metrics' in metadata and anomaly_idx < len(metadata['anomaly_metrics']):
+                        metric = metadata['anomaly_metrics'][anomaly_idx]
+                        if isinstance(metric, dict) and 'obj_brightness' in metric and 'contrast' in metric:
+                            text = f"B:{metric['obj_brightness']:.1f} C:{metric['contrast']:.1f}"
+                            cv2.putText(overlay, text, 
+                                      (x, y - 5),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.4, ANOMALY_BOX_COLOR, 1)
+            
+            # Draw space box outline with index
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), 1)
+            # Add space box index
+            cv2.putText(overlay, f"Space {idx + 1}", 
+                       (x1 + 5, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         
-        # Blend overlay with debug view - use higher alpha for more vibrant colors
-        alpha = 0.9  # Increased from 0.7 to 0.9
-        cv2.addWeighted(debug_view, alpha, overlay, 1.0, 0, debug_view)  # Changed overlay weight to 1.0
+        # Blend overlay with debug view
+        alpha = 0.9  # Increased from 0.7 to 0.9 for better visibility
+        cv2.addWeighted(debug_view, alpha, overlay, 1.0, 0, debug_view)
         
         return debug_view
 

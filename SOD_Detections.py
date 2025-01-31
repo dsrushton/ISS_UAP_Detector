@@ -87,95 +87,52 @@ class SpaceObjectDetector:
         """Set the logger instance."""
         self.logger = logger
 
-    def analyze_object(self, frame: np.ndarray, binary_mask: np.ndarray, w: int, h: int) -> bool:
-        """Analyze if object passes detection criteria"""
-        # STRICT SIZE REQUIREMENTS FIRST
-        # Minimum dimensions
-        if w < MIN_CONTOUR_WIDTH or h < MIN_CONTOUR_HEIGHT:
-            return False
-        
-        # Maximum dimensions    
-        if w > MAX_CONTOUR_WIDTH or h > MAX_CONTOUR_HEIGHT:
-            return False
-        
-        # Area check - much more permissive for elongated objects
-        aspect = max(w, h) / min(w, h)
-        min_area = MIN_CONTOUR_AREA if aspect > 3 else MIN_CONTOUR_AREA * 1.5
-        
-        # Use the binary mask for exact object boundaries
-        obj_pixels = cv2.bitwise_and(frame, frame, mask=binary_mask)
-        area = np.count_nonzero(binary_mask)
-        if area < min_area:
-            return False
-        
-        # Aspect ratio check - Allow very elongated objects
-        if aspect > MAX_ASPECT_RATIO or aspect < (1.0 / MAX_ASPECT_RATIO):
-            return False
-        
-        # Get brightness using max RGB values
-        masked_pixels = obj_pixels[binary_mask > 0]
-        if len(masked_pixels) == 0:
-            return False
-        obj_brightness = float(np.mean(np.max(masked_pixels, axis=1)))
-        
-        # Get background from dilated region outside mask using max RGB
-        kernel = np.ones((3,3), np.uint8)
-        bg_mask = cv2.dilate(binary_mask, kernel, iterations=2)
-        bg_mask = cv2.bitwise_xor(bg_mask, binary_mask)
-        bg_pixels = cv2.bitwise_and(frame, frame, mask=bg_mask)
-        
-        # Check if we have valid background pixels
-        masked_bg = bg_pixels[bg_mask > 0]
-        if len(masked_bg) == 0:
-            return False
-        bg_brightness = float(np.mean(np.max(masked_bg, axis=1)))
-        
-        contrast = abs(obj_brightness - bg_brightness)
-        
-        # Brightness checks - Using constants
-        if not (MIN_BRIGHTNESS < obj_brightness < MAX_BRIGHTNESS):
-            return False
-        if bg_brightness > MAX_BG_BRIGHTNESS:
-            return False
-        if contrast < MIN_CONTRAST:
-            return False
-        
-        return True
-
     def detect_anomalies(self, frame: np.ndarray, space_box: tuple, avoid_boxes: List[Tuple[int, int, int, int]] = None) -> DetectionResults:
-        """Find anomalies in space region."""
+        """Find relevant contour distinctions in space region."""
         results = DetectionResults()
         x1, y1, x2, y2 = space_box
         roi = frame[y1:y2, x1:x2]
         
-        # Apply Gaussian blur and create masks
+        # Convert to max RGB if needed
+        if len(roi.shape) == 3:
+            roi_max = np.max(roi, axis=2)
+        else:
+            roi_max = roi
+            
+        # Apply Gaussian blur to reduce noise
         mask_start = time.time()
-        blurred = cv2.GaussianBlur(roi, (5, 5), 0)
+        blurred = cv2.GaussianBlur(roi_max, (5, 5), 0)
         
-        # Get max value across RGB channels
-        max_values = np.max(blurred, axis=2)
+        # Create binary mask for bright objects
+        _, bright_mask = cv2.threshold(blurred, MIN_BRIGHTNESS, 255, cv2.THRESH_BINARY)
         
-        # Create masks for brightness detection using max RGB value
-        _, lower_mask = cv2.threshold(max_values, MIN_BRIGHTNESS, 255, cv2.THRESH_BINARY)
-        _, upper_mask = cv2.threshold(max_values, MAX_BRIGHTNESS, 255, cv2.THRESH_BINARY_INV)
-        mask = cv2.bitwise_and(lower_mask, upper_mask)
+        # Create binary mask for dark background
+        _, dark_mask = cv2.threshold(blurred, MAX_BG_BRIGHTNESS, 255, cv2.THRESH_BINARY_INV)
         
-        # Clean up mask
+        # Combine masks to get regions where bright objects meet dark background
         kernel = np.ones((3,3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        bright_mask = cv2.dilate(bright_mask, kernel, iterations=1)
+        dark_mask = cv2.dilate(dark_mask, kernel, iterations=1)
+        
+        # Get intersection of dilated masks
+        edge_mask = cv2.bitwise_and(bright_mask, dark_mask)
+        
+        # Clean up the mask
+        edge_mask = cv2.morphologyEx(edge_mask, cv2.MORPH_CLOSE, kernel)
         self.logger.log_operation_time('mask_creation', time.time() - mask_start)
         
         # Find contours
         contour_start = time.time()
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        results.contours = contours
+        contours, _ = cv2.findContours(edge_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         # Limit number of contours processed
         if len(contours) > 10:
             contours = sorted(contours, key=cv2.contourArea, reverse=True)[:10]
             results.metadata['max_contours_reached'] = True
         self.logger.log_operation_time('contour_finding', time.time() - contour_start)
+        
+        # Store all contours for visualization
+        results.contours = contours
         
         anomalies = []
         anomaly_metrics = []
@@ -188,7 +145,7 @@ class SpaceObjectDetector:
         # Process each contour
         analysis_start = time.time()
         for contour in contours:
-            # Skip if we've already found 4 valid detections
+            # Skip if we've already found 3 valid detections
             if valid_detections >= 3:
                 break
             
@@ -203,37 +160,23 @@ class SpaceObjectDetector:
                 continue
             
             # Create binary mask for exact object boundaries
-            obj_mask = np.zeros_like(mask)
+            obj_mask = np.zeros_like(edge_mask)
             cv2.drawContours(obj_mask, [contour], -1, 255, -1)
             
             # Only proceed if analyze_object approves this contour
-            if not self.analyze_object(roi, obj_mask, w, h):
+            is_valid, metrics = self.analyze_object(roi_max, obj_mask, w, h)
+            if not is_valid:
                 continue
             
-            # Calculate metrics for display using max RGB values
-            brightness_start = time.time()
-            obj_pixels = cv2.bitwise_and(roi, roi, mask=obj_mask)
-            obj_brightness = np.mean(np.max(obj_pixels[obj_mask > 0], axis=1))
-            
-            # Calculate background brightness from dilated region outside mask using max RGB
-            bg_mask = cv2.dilate(obj_mask, kernel, iterations=2)
-            bg_mask = cv2.bitwise_xor(bg_mask, obj_mask)
-            bg_pixels = cv2.bitwise_and(roi, roi, mask=bg_mask)
-            bg_brightness = np.mean(np.max(bg_pixels[bg_mask > 0], axis=1))
-            
-            contrast = abs(obj_brightness - bg_brightness)
-            self.logger.log_operation_time('brightness_check', time.time() - brightness_start)
+            # Skip if contrast is too low or negative
+            if metrics['contrast'] < MIN_CONTRAST:
+                continue
             
             # Store metrics for this anomaly
-            metrics = {
-                'position': (x + x1, y + y1),
-                'obj_brightness': obj_brightness,
-                'bg_brightness': bg_brightness,
-                'contrast': contrast,
-                'width': w,
-                'height': h,
-                'area': w * h
-            }
+            metrics['position'] = (x + x1, y + y1)  # Convert back to frame coordinates
+            metrics['width'] = w
+            metrics['height'] = h
+            metrics['area'] = w * h
             
             # Convert to absolute coordinates
             abs_x = x + x1
@@ -259,18 +202,83 @@ class SpaceObjectDetector:
         
         self.logger.log_operation_time('contour_analysis', time.time() - analysis_start)
         
-        # Store results - preserve any existing metadata
-        if 'anomaly_metrics' not in results.metadata:
-            results.metadata['anomaly_metrics'] = []
+        # Store results
         results.metadata['anomaly_metrics'] = anomaly_metrics
-        
-        # Add detection statistics
         results.metadata['total_contours'] = len(contours)
         results.metadata['valid_detections'] = valid_detections
-        
         results.add_anomalies(anomalies)
         
         return results
+    
+    def analyze_object(self, frame: np.ndarray, binary_mask: np.ndarray, w: int, h: int) -> bool:
+        """Analyze if object passes detection criteria"""
+        try:
+            # Get contours from the binary mask
+            contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                return False, {}
+            
+            # Get largest contour
+            contour = max(contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            metrics = {
+                'area': cv2.contourArea(contour),
+                'aspect_ratio': float(w)/h if h != 0 else 0,
+                'width': w,
+                'height': h
+            }
+            
+            # STRICT SIZE REQUIREMENTS FIRST
+            if (w < MIN_CONTOUR_WIDTH or h < MIN_CONTOUR_HEIGHT or
+                w > MAX_CONTOUR_WIDTH or h > MAX_CONTOUR_HEIGHT):
+                return False, metrics
+            
+            if metrics['area'] < MIN_CONTOUR_AREA:
+                return False, metrics
+            
+            if metrics['aspect_ratio'] > MAX_ASPECT_RATIO or metrics['aspect_ratio'] < (1/MAX_ASPECT_RATIO):
+                return False, metrics
+            
+            # Create precise masks for object and background
+            mask = np.zeros(binary_mask.shape, dtype=np.uint8)
+            cv2.drawContours(mask, [contour], -1, 255, -1)
+            
+            # Create dilated ring around object for background measurement
+            kernel = np.ones((3,3), np.uint8)
+            bg_mask = cv2.dilate(mask, kernel, iterations=2)
+            bg_mask = cv2.bitwise_xor(bg_mask, mask)  # Creates ring around object
+            
+            # Convert frame to max RGB if not already grayscale
+            if len(frame.shape) == 3:
+                frame_max = np.max(frame, axis=2)  # Use max RGB value
+            else:
+                frame_max = frame
+            
+            # Get precise brightness measurements
+            obj_brightness = cv2.mean(frame_max, mask=mask)[0]
+            bg_brightness = cv2.mean(frame_max, mask=bg_mask)[0]
+            contrast = obj_brightness - bg_brightness
+            
+            metrics.update({
+                'obj_brightness': obj_brightness,
+                'bg_brightness': bg_brightness,
+                'contrast': contrast
+            })
+            
+            # Brightness checks
+            if not (MIN_BRIGHTNESS < obj_brightness < MAX_BRIGHTNESS):
+                return False, metrics
+            if bg_brightness > MAX_BG_BRIGHTNESS:
+                return False, metrics
+            if contrast < MIN_CONTRAST:
+                return False, metrics
+            
+            return True, metrics
+            
+        except Exception as e:
+            print(f"Error in analyze_object: {e}")
+            return False, {}
 
     def process_frame(self, frame: np.ndarray, avoid_boxes: List[Tuple[int, int, int, int]] = None) -> Optional[DetectionResults]:
         """Process frame through detection pipeline."""
@@ -370,13 +378,13 @@ class SpaceObjectDetector:
                                 break
                         
                         # Check ISS overlap
-                        if not overlaps:
-                            for iss_box in iss_boxes:
-                                iss_x1, iss_y1, iss_x2, iss_y2 = iss_box
-                                if (ax < iss_x2 and ax + aw > iss_x1 and
-                                    ay < iss_y2 and ay + ah > iss_y1):
-                                    overlaps = True
-                                    break
+                        #if not overlaps:
+                          #  for iss_box in iss_boxes:
+                                #iss_x1, iss_y1, iss_x2, iss_y2 = iss_box
+                                #if (ax < iss_x2 and ax + aw > iss_x1 and
+                                #    ay < iss_y2 and ay + ah > iss_y1):
+                                #    overlaps = True
+                                #    break
                         
                         # Check panel overlap
                         if not overlaps:
