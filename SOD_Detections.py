@@ -19,7 +19,8 @@ from SOD_Constants import (
     RCNN_DETECTION_CYCLE, MIN_CONTOUR_WIDTH, MIN_CONTOUR_HEIGHT,
     MAX_CONTOUR_WIDTH, MAX_CONTOUR_HEIGHT, MIN_CONTOUR_AREA,
     MAX_ASPECT_RATIO, MAX_BG_BRIGHTNESS, MIN_CONTRAST, MAX_LENS_FLARES,
-    DARKNESS_AREA_THRESHOLD
+    DARKNESS_AREA_THRESHOLD, MIN_DARK_REGION_SIZE, GAUSSIAN_BLUR_SIZE,
+    MORPH_KERNEL_SIZE
 )
 
 @dataclass
@@ -101,16 +102,30 @@ class SpaceObjectDetector:
             
         # Apply Gaussian blur to reduce noise
         mask_start = time.time()
-        blurred = cv2.GaussianBlur(roi_max, (5, 5), 0)
-        
-        # Create binary mask for bright objects
-        _, bright_mask = cv2.threshold(blurred, MIN_BRIGHTNESS, 255, cv2.THRESH_BINARY)
+        blurred = cv2.GaussianBlur(roi_max, (GAUSSIAN_BLUR_SIZE, GAUSSIAN_BLUR_SIZE), 0)
         
         # Create binary mask for dark background
         _, dark_mask = cv2.threshold(blurred, MAX_BG_BRIGHTNESS, 255, cv2.THRESH_BINARY_INV)
         
+        # Check if dark area is large enough to be a valid search region
+        dark_contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        valid_dark_region = False
+        for dark_contour in dark_contours:
+            x, y, w, h = cv2.boundingRect(dark_contour)
+            if w >= MIN_DARK_REGION_SIZE and h >= MIN_DARK_REGION_SIZE:
+                valid_dark_region = True
+                break
+        
+        if not valid_dark_region:
+            # Return empty results if no valid dark region found
+            results.metadata['reason'] = 'no_valid_dark_region'
+            return results
+        
+        # Create binary mask for bright objects
+        _, bright_mask = cv2.threshold(blurred, MIN_BRIGHTNESS, 255, cv2.THRESH_BINARY)
+        
         # Combine masks to get regions where bright objects meet dark background
-        kernel = np.ones((3,3), np.uint8)
+        kernel = np.ones((MORPH_KERNEL_SIZE, MORPH_KERNEL_SIZE), np.uint8)
         bright_mask = cv2.dilate(bright_mask, kernel, iterations=1)
         dark_mask = cv2.dilate(dark_mask, kernel, iterations=1)
         
@@ -121,9 +136,9 @@ class SpaceObjectDetector:
         edge_mask = cv2.morphologyEx(edge_mask, cv2.MORPH_CLOSE, kernel)
         self.logger.log_operation_time('mask_creation', time.time() - mask_start)
         
-        # Find contours
+        # Find contours using the edge mask
         contour_start = time.time()
-        contours, _ = cv2.findContours(edge_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(bright_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         # Limit number of contours processed
         if len(contours) > 10:
@@ -153,18 +168,18 @@ class SpaceObjectDetector:
             x, y, w, h = cv2.boundingRect(contour)
             
             # Check if detection touches frame border
-            if (x <= BORDER_MARGIN or 
-                y <= BORDER_MARGIN or 
-                x + w >= frame_width - BORDER_MARGIN or 
-                y + h >= frame_height - BORDER_MARGIN):
-                continue
+            #if (x <= BORDER_MARGIN or 
+            #    y <= BORDER_MARGIN or 
+            #    x + w >= frame_width - BORDER_MARGIN or 
+            #    y + h >= frame_height - BORDER_MARGIN):
+            #    continue
             
             # Create binary mask for exact object boundaries
             obj_mask = np.zeros_like(edge_mask)
             cv2.drawContours(obj_mask, [contour], -1, 255, -1)
             
             # Only proceed if analyze_object approves this contour
-            is_valid, metrics = self.analyze_object(roi_max, obj_mask, w, h)
+            is_valid, metrics = self.analyze_object(roi_max, obj_mask, w, h, contour)
             if not is_valid:
                 continue
             
@@ -210,16 +225,16 @@ class SpaceObjectDetector:
         
         return results
     
-    def analyze_object(self, frame: np.ndarray, binary_mask: np.ndarray, w: int, h: int) -> bool:
+    def analyze_object(self, frame: np.ndarray, binary_mask: np.ndarray, w: int, h: int, contour: np.ndarray = None) -> bool:
         """Analyze if object passes detection criteria"""
         try:
-            # Get contours from the binary mask
-            contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if not contours:
-                return False, {}
+            # Use provided contour if available, otherwise find it
+            if contour is None:
+                contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if not contours:
+                    return False, {}
+                contour = max(contours, key=cv2.contourArea)
             
-            # Get largest contour
-            contour = max(contours, key=cv2.contourArea)
             x, y, w, h = cv2.boundingRect(contour)
             
             metrics = {
@@ -245,7 +260,7 @@ class SpaceObjectDetector:
             cv2.drawContours(mask, [contour], -1, 255, -1)
             
             # Create dilated ring around object for background measurement
-            kernel = np.ones((3,3), np.uint8)
+            kernel = np.ones((MORPH_KERNEL_SIZE, MORPH_KERNEL_SIZE), np.uint8)
             bg_mask = cv2.dilate(mask, kernel, iterations=2)
             bg_mask = cv2.bitwise_xor(bg_mask, mask)  # Creates ring around object
             
