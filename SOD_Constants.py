@@ -70,40 +70,44 @@ RAW_SUBDIR = "Burst_raw"
 #TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\sprites2.jpg"
 #TEST_IMAGE_PATH = r"C:\Users\dsrus\OneDrive\Pictures\bigmoney2.jpg"  # Known working path
  # Better Tests
-#TEST_IMAGE_PATH = "./Test_Image_Collection/000512.jpg"
+TEST_IMAGE_PATH = "./Test_Image_Collection/000512.jpg"
 #TEST_IMAGE_PATH = "./Test_Image_Collection/000777.jpg"
 #TEST_IMAGE_PATH = "./Test_Image_Collection/000912.jpg
 #TEST_IMAGE_PATH = "./Test_Image_Collection/\001469.jpg"
 #TEST_IMAGE_PATH = "./Test_Image_Collection/001641.jpg"
-TEST_IMAGE_PATH = "./Test_Image_Collection/00195-a.jpg"
+#TEST_IMAGE_PATH = "./Test_Image_Collection/00195-a.jpg"
+#TEST_IMAGE_PATH = "./Test_Image_Collection/00101-a.jpg"
 
-# Video Recording Settings
+# Recording Settings
 BUFFER_SECONDS = 3
 POST_DETECTION_SECONDS = 2.1
-VIDEO_FPS = 30
-
-
-# Anomaly Detection Parameters
-#Try using max_value RGB instead of weighted grayscale
-MIN_BRIGHTNESS = 26
-MAX_BRIGHTNESS = 200
-SAVE_INTERVAL = 2.0  # Seconds between saves
-
-# Detection Parameters
-MAX_BG_BRIGHTNESS = 23
-MIN_CONTRAST = 6
-MIN_CONTOUR_WIDTH = 5
-MIN_CONTOUR_HEIGHT = 5
-MAX_CONTOUR_WIDTH = 200
-MAX_CONTOUR_HEIGHT = 200
-MIN_CONTOUR_AREA = 25
-MAX_ASPECT_RATIO = 8.0
+SAVE_INTERVAL = 2.0  # Seconds between .jpg saves
+VIDEO_FPS = 54
 
 # RCNN Parameters
 MAX_RCNN_BOXES = 10
 DARKNESS_AREA_THRESHOLD = 0.25 #Total darkness area threshold
 RCNN_DETECTION_CYCLE = 54 #Frame interval for RCNN detection
 MAX_LENS_FLARES = 3  # Maximum number of lens flares before skipping contour detection
+
+
+# Anomaly Detection Parameters -- Using max_value RGB instead of weighted grayscale
+MIN_BRIGHTNESS = 25
+MAX_BRIGHTNESS = 240
+MIN_DARK_REGION_SIZE = 100
+GAUSSIAN_BLUR_SIZE = 5      # Size of Gaussian blur kernel (must be odd)
+MORPH_KERNEL_SIZE = 3       # Size of morphological operation kernel
+
+# Detection Approval Parameters
+MAX_BG_BRIGHTNESS = 23
+MIN_CONTRAST = 7
+MIN_CONTOUR_WIDTH = 6
+MIN_CONTOUR_HEIGHT = 6
+MAX_CONTOUR_WIDTH = 200
+MAX_CONTOUR_HEIGHT = 200
+MIN_CONTOUR_AREA = 36
+MAX_ASPECT_RATIO = 12.0
+
 
 # Display Parameters
 DEBUG_VIEW_ENABLED = True

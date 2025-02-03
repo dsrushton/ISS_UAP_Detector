@@ -130,20 +130,31 @@ class SpaceObjectDetectionSystem:
             annotated_frame = self.display.draw_detections(frame, detections)
             self.logger.log_operation_time('display_update', time.time() - display_start)
             
-            # Create debug view if we have a space region
+            # Create debug view if we have space regions
             debug_view = None
-            if detections.space_box is not None:
+            if 'space' in detections.rcnn_boxes and not detections.darkness_detected and 'nofeed' not in detections.rcnn_boxes:
                 debug_start = time.time()
-                x1, y1, x2, y2 = detections.space_box
-                roi = frame[y1:y2, x1:x2]
-                debug_view = self.display.create_debug_view(
-                    roi, 
-                    detections.contours,
-                    detections.space_box,
-                    detections.anomalies,
-                    detections.metadata
-                )
+                
+                # Prepare data for all space boxes
+                space_data = []
+                for space_box in detections.rcnn_boxes['space']:
+                    # Get box-specific detections
+                    box_results = self.detector.detect_anomalies(frame, space_box, self.display.avoid_boxes)
+                    if box_results is not None:
+                        space_data.append((
+                            space_box,
+                            box_results.contours,
+                            box_results.anomalies,
+                            box_results.metadata
+                        ))
+                
+                # Create debug view with all space boxes
+                debug_view = self.display.create_debug_view(frame, space_data)
                 self.logger.log_operation_time('debug_view', time.time() - debug_start)
+            elif detections.darkness_detected:
+                debug_view = self.display.draw_darkness_overlay(np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8))
+            elif 'nofeed' in detections.rcnn_boxes:
+                debug_view = self.display.draw_nofeed_overlay(np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8))
             
             # Add to video buffer
             buffer_start = time.time()
@@ -188,7 +199,7 @@ class SpaceObjectDetectionSystem:
 
             # Handle burst capture
             if self.burst_remaining > 0:
-                self.capture.save_frame(frame, debug_view)
+                self.capture.save_raw_frame(frame)
                 self.burst_remaining -= 1
             
             # Display frames
@@ -216,91 +227,87 @@ class SpaceObjectDetectionSystem:
             print(f"Error processing frame: {str(e)}")
             return None
 
+    def _attempt_connection(self, source: str, is_youtube: bool = False) -> bool:
+        """Attempt to establish a connection to the video source."""
+        try:
+            if is_youtube:
+                print("\nAttempting to get fresh stream URL...")
+                stream_url = get_best_stream_url(source)
+                if not stream_url:
+                    print("Failed to get stream URL")
+                    return False
+                print(f"Got stream URL: {stream_url[:50]}...")
+                source = stream_url
+            
+            print("Initializing video capture...")
+            self.cap = cv2.VideoCapture(source)
+            if not self.cap.isOpened():
+                print("Failed to open video capture")
+                return False
+                
+            print("Successfully connected to video source")
+            return True
+            
+        except Exception as e:
+            print(f"Connection attempt failed: {str(e)}")
+            return False
+
     def process_video_stream(self, source: str, is_youtube: bool = False) -> None:
-        """
-        Main processing loop for video input.
-        
-        Args:
-            source: Path to video file or YouTube URL
-            is_youtube: Whether source is a YouTube URL
-        """
-        # Initialize components
+        """Main processing loop for video input."""
         if not self.initialize():
             return
             
         self.is_running = True
+        consecutive_errors = 0
+        backoff_time = RECONNECT_DELAY
         
-        while self.is_running:  # Outer loop for reconnection attempts
-            try:
-                # Handle YouTube URLs
-                if is_youtube:
-                    stream_url = get_best_stream_url(source)
-                    if not stream_url:
-                        print("\nFailed to get stream URL. Retrying in 5 seconds...")
-                        time.sleep(5)
-                        continue
-                    source = stream_url
-
-                # Initialize video capture
-                print("\nConnecting to video source...")
-                if not self.video.set_source(source):
-                    print("\nError: Could not open video source. Retrying in 5 seconds...")
-                    time.sleep(5)
-                    continue
-
-                # Main processing loop
-                consecutive_errors = 0
-                backoff_time = RECONNECT_DELAY
+        while self.is_running:
+            # Attempt connection
+            if not self._attempt_connection(source, is_youtube):
+                print(f"Connection failed (attempt {consecutive_errors + 1})")
+                consecutive_errors += 1
                 
-                while self.is_running:
-                    try:
-                        # Get fresh stream URL for YouTube
-                        url = get_best_stream_url(source)
-                        self.cap = cv2.VideoCapture(url)
-                    except Exception as e:
-                        print(f"Error: {str(e)}")
-                        consecutive_errors += 1
-                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                            print(f"\nToo many consecutive errors ({consecutive_errors}). Attempting reconnection...")
-                            time.sleep(backoff_time)
-                            backoff_time = min(backoff_time * 2, 60)  # Double backoff time, max 60 seconds
-                            self._cleanup()  # Ensure resources are cleaned up before reconnecting
-                        else:
-                            time.sleep(1)  # Brief pause before retry
-                        continue
-                        
-                    if not self.cap.isOpened():
-                        raise RuntimeError("Failed to open video capture")
-                        
-                    print("Connected to ISS live feed")
-                    consecutive_errors = 0  # Reset error count on successful connection
-                    backoff_time = RECONNECT_DELAY  # Reset backoff time
-                    
-                    while self.is_running:
-                        # Read frame
-                        ret, frame = self.cap.read()
-                        if not ret:
-                            raise RuntimeError("Failed to read frame")
-                        
-                        # Process frame
-                        result = self.process_frame(frame)
-                        if result is None:
-                            consecutive_errors += 1
-                            continue
-                        elif result is False:
-                            self.is_running = False  # User quit
-                            break
-                        
-                    # Clean up current capture before reconnection attempt
-                    self.video.cap.release()
-                    if self.is_running:  # Only sleep if we're retrying
-                        time.sleep(5)
-                    
-            except Exception as e:
-                print(f"\nError processing video stream: {str(e)}")
-                self.is_running = False
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    print(f"Too many consecutive errors ({consecutive_errors})")
+                    print(f"Backing off for {backoff_time} seconds...")
+                    time.sleep(backoff_time)
+                    backoff_time = min(backoff_time * 2, 60)
+                    self._cleanup()
+                else:
+                    print("Retrying in 5 seconds...")
+                    time.sleep(5)
+                continue
             
+            # Reset error counters on successful connection
+            consecutive_errors = 0
+            backoff_time = RECONNECT_DELAY
+            
+            # Main frame processing loop
+            while self.is_running:
+                ret, frame = self.cap.read()
+                if not ret:
+                    print("\nFailed to read frame")
+                    print("Capture state:", "Opened" if self.cap.isOpened() else "Closed")
+                    break  # Break to outer loop for reconnection
+                
+                # Process frame
+                result = self.process_frame(frame)
+                if result is None:
+                    print("Frame processing error")
+                    continue
+                elif result is False:
+                    print("User initiated shutdown")
+                    self.is_running = False
+                    break
+            
+            # Clean up before reconnection attempt
+            if self.is_running:
+                print("\nLost connection - cleaning up and preparing to reconnect...")
+                self._cleanup()
+                time.sleep(5)
+        
         # Final cleanup
+        print("\nShutting down...")
         cv2.destroyAllWindows()
         self.cleanup()
 
