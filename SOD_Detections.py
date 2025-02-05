@@ -12,6 +12,8 @@ from torchvision.models.detection import fasterrcnn_resnet50_fpn
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple, Any
 import time
+import threading
+import queue
 
 from SOD_Constants import (
     DEVICE, MODEL_PATH, CLASS_NAMES, CLASS_THRESHOLDS,
@@ -74,7 +76,6 @@ class SpaceObjectDetector:
         
         # Initialize transform
         self.transform = T.Compose([
-            T.ToTensor(),
             T.Normalize(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225]
@@ -83,6 +84,13 @@ class SpaceObjectDetector:
         
         self.consecutive_lf = 0
         self.lf_pause_until = 0  # Track when to resume after lens flares
+
+        # Setup RCNN threading
+        self.rcnn_queue = queue.Queue(maxsize=1)  # Only keep one pending frame
+        self.rcnn_worker_running = True
+        self.rcnn_worker_thread = threading.Thread(target=self._rcnn_worker)
+        self.rcnn_worker_thread.daemon = True
+        self.rcnn_worker_thread.start()
 
     def set_logger(self, logger):
         """Set the logger instance."""
@@ -107,14 +115,11 @@ class SpaceObjectDetector:
         # Create binary mask for dark background
         _, dark_mask = cv2.threshold(blurred, MAX_BG_BRIGHTNESS, 255, cv2.THRESH_BINARY_INV)
         
-        # Check if dark area is large enough to be a valid search region
-        dark_contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        valid_dark_region = False
-        for dark_contour in dark_contours:
-            x, y, w, h = cv2.boundingRect(dark_contour)
-            if w >= MIN_DARK_REGION_SIZE and h >= MIN_DARK_REGION_SIZE:
-                valid_dark_region = True
-                break
+        # Check if dark area has any 100x100 region that's completely dark
+        kernel = np.ones((MIN_DARK_REGION_SIZE, MIN_DARK_REGION_SIZE), np.uint8)
+        valid_region_mask = cv2.erode(dark_mask, kernel, iterations=1)
+        
+        valid_dark_region = cv2.countNonZero(valid_region_mask) > 0
         
         if not valid_dark_region:
             # Return empty results if no valid dark region found
@@ -136,7 +141,7 @@ class SpaceObjectDetector:
         edge_mask = cv2.morphologyEx(edge_mask, cv2.MORPH_CLOSE, kernel)
         self.logger.log_operation_time('mask_creation', time.time() - mask_start)
         
-        # Find contours using the edge mask
+        # Find contours using the bright mask
         contour_start = time.time()
         contours, _ = cv2.findContours(bright_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
@@ -295,6 +300,59 @@ class SpaceObjectDetector:
             print(f"Error in analyze_object: {e}")
             return False, {}
 
+    def _combine_overlapping_boxes(self, boxes: List[Tuple[float, float, float, float]]) -> List[Tuple[float, float, float, float]]:
+        """
+        Combine overlapping space boxes into larger boxes.
+        
+        Args:
+            boxes: List of (x1, y1, x2, y2) boxes
+            
+        Returns:
+            List of combined boxes
+        """
+        if not boxes:
+            return []
+            
+        # Convert to numpy array for easier manipulation
+        boxes = np.array(boxes)
+        combined_boxes = []
+        used = set()
+        
+        for i, box1 in enumerate(boxes):
+            if i in used:
+                continue
+                
+            # Start with current box
+            x1, y1, x2, y2 = box1
+            used.add(i)
+            
+            # Keep expanding box while we find overlaps
+            changed = True
+            while changed:
+                changed = False
+                for j, box2 in enumerate(boxes):
+                    if j in used:
+                        continue
+                        
+                    # Check if boxes overlap
+                    ox1 = max(x1, box2[0])
+                    oy1 = max(y1, box2[1])
+                    ox2 = min(x2, box2[2])
+                    oy2 = min(y2, box2[3])
+                    
+                    if ox1 < ox2 and oy1 < oy2:
+                        # Boxes overlap, expand current box
+                        x1 = min(x1, box2[0])
+                        y1 = min(y1, box2[1])
+                        x2 = max(x2, box2[2])
+                        y2 = max(y2, box2[3])
+                        used.add(j)
+                        changed = True
+            
+            combined_boxes.append((x1, y1, x2, y2))
+        
+        return combined_boxes
+
     def process_frame(self, frame: np.ndarray, avoid_boxes: List[Tuple[int, int, int, int]] = None) -> Optional[DetectionResults]:
         """Process frame through detection pipeline."""
         try:
@@ -303,13 +361,16 @@ class SpaceObjectDetector:
             results = DetectionResults(frame_number=self.frame_count)
             
             if is_rcnn_frame:
-                self.last_rcnn_results = self._run_rcnn_detection(frame)
-                self.last_rcnn_frame = self.frame_count
-                results.metadata['rcnn_frame'] = True
+                # Instead of running RCNN synchronously, push it to the queue
+                try:
+                    self.rcnn_queue.put_nowait(frame.copy())
+                    results.metadata['rcnn_frame'] = True
+                except Exception:
+                    results.metadata['rcnn_frame'] = False
             
-            # Copy RCNN results
-            results.rcnn_boxes = self.last_rcnn_results['boxes']
-            results.rcnn_scores = self.last_rcnn_results['scores']
+            # Use the latest available RCNN results
+            results.rcnn_boxes = self.last_rcnn_results.get('boxes', {})
+            results.rcnn_scores = self.last_rcnn_results.get('scores', {})
             
             # Check for darkness
             if 'td' in self.last_rcnn_results['boxes']:
@@ -317,7 +378,7 @@ class SpaceObjectDetector:
                 for box in self.last_rcnn_results['boxes']['td']:
                     x1, y1, x2, y2 = box
                     td_area = (x2 - x1) * (y2 - y1)
-                    if td_area > frame_area * DARKNESS_AREA_THRESHOLD:  # Use constant instead of hardcoded value
+                    if td_area > frame_area * DARKNESS_AREA_THRESHOLD:
                         results.darkness_detected = True
                         break
             
@@ -333,41 +394,46 @@ class SpaceObjectDetector:
             
             # Only proceed with anomaly detection if we have a space region
             if 'space' in results.rcnn_boxes:
-                space_boxes = sorted(results.rcnn_boxes['space'], 
-                                  key=lambda box: box[1])  # Sort by y1 coordinate
+                # Get all space boxes and combine overlapping ones
+                space_boxes = self._combine_overlapping_boxes(results.rcnn_boxes['space'])
                 
-                # Store the highest box for display purposes
-                results.space_box = space_boxes[0]
+                # Sort combined boxes by y1 coordinate (highest first)
+                space_boxes = sorted(space_boxes, key=lambda box: box[1])
                 
-                # Track all anomalies across all space boxes
+                # Store the combined box for display and processing
+                results.space_box = space_boxes[0]  # Main combined box for display
+                results.metadata['all_space_boxes'] = space_boxes  # Store all boxes for reference
+                
+                # Track all anomalies and metrics
                 all_anomalies = []
                 all_metrics = []
-                all_contours = []
-                seen_positions = set()  # Track positions to avoid duplicate detections
                 
-                # Process each space box
-                for space_box in space_boxes:
-                    # Run anomaly detection on this box
-                    box_results = self.detect_anomalies(frame, space_box, avoid_boxes)
+                # Process the main combined space box
+                box_results = self.detect_anomalies(frame, results.space_box, avoid_boxes)
+                
+                # Store all results from the combined box
+                if box_results.anomalies:
+                    all_anomalies.extend(box_results.anomalies)
+                    if 'anomaly_metrics' in box_results.metadata:
+                        all_metrics.extend(box_results.metadata['anomaly_metrics'])
+                
+                # Store contours from the combined box
+                results.contours = box_results.contours
+                
+                # Process additional space boxes if they don't overlap with the main one
+                for space_box in space_boxes[1:]:
+                    # Check if this box overlaps with the main box
+                    main_x1, main_y1, main_x2, main_y2 = results.space_box
+                    x1, y1, x2, y2 = space_box
                     
-                    # Check each anomaly to avoid duplicates (if boxes overlap)
-                    for i, (x, y, w, h) in enumerate(box_results.anomalies):
-                        # Create a position key (using center point)
-                        pos_key = (x + w//2, y + h//2)
-                        
-                        # Skip if we've seen a detection at this position
-                        if pos_key in seen_positions:
-                            continue
-                            
-                        seen_positions.add(pos_key)
-                        all_anomalies.append((x, y, w, h))
-                        
-                        if 'anomaly_metrics' in box_results.metadata:
-                            all_metrics.append(box_results.metadata['anomaly_metrics'][i])
-                    
-                    # Store contours only from the top box for display
-                    if np.array_equal(space_box, results.space_box):
-                        all_contours = box_results.contours
+                    # If boxes don't overlap, process this one too
+                    if (x2 < main_x1 or x1 > main_x2 or 
+                        y2 < main_y1 or y1 > main_y2):
+                        box_results = self.detect_anomalies(frame, space_box, avoid_boxes)
+                        if box_results.anomalies:
+                            all_anomalies.extend(box_results.anomalies)
+                            if 'anomaly_metrics' in box_results.metadata:
+                                all_metrics.extend(box_results.metadata['anomaly_metrics'])
                 
                 # Get lens flare boxes for filtering
                 lf_boxes = self.last_rcnn_results['boxes'].get('lf', [])
@@ -421,10 +487,7 @@ class SpaceObjectDetector:
                 
                 # Update final results
                 results.anomalies = all_anomalies
-                results.contours = all_contours
-                if all_metrics:
-                    results.metadata['anomaly_metrics'] = all_metrics
-                results.metadata['total_space_boxes'] = len(space_boxes)
+                results.metadata['anomaly_metrics'] = all_metrics
             
             return results
             
@@ -434,6 +497,14 @@ class SpaceObjectDetector:
 
     def cleanup(self):
         """Clean up resources."""
+        self.rcnn_worker_running = False
+        # Signal the worker thread to exit
+        try:
+            self.rcnn_queue.put(None, timeout=1)
+        except Exception:
+            pass
+        if hasattr(self, 'rcnn_worker_thread'):
+            self.rcnn_worker_thread.join()
         self.model = None
         torch.cuda.empty_cache()
 
@@ -470,9 +541,9 @@ class SpaceObjectDetector:
         """Run RCNN detection on a frame."""
         start = time.time()
         
-        # Convert frame for RCNN
-        img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        img_tensor = self.transform(img_pil).unsqueeze(0).to(DEVICE)
+        # Convert BGR numpy array directly to tensor (HWC -> CHW)
+        img_tensor = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
+        img_tensor = self.transform(img_tensor).unsqueeze(0).to(DEVICE)
         self.logger.log_operation_time('rcnn_prep', time.time() - start)
         
         # Run detection
@@ -487,32 +558,13 @@ class SpaceObjectDetector:
         labels = predictions['labels'].cpu().numpy()
         scores = predictions['scores'].cpu().numpy()
         
-        # Process predictions with priority
-        priority_classes = ['panel', 'iss']  # Process these first
         results = {'boxes': {}, 'scores': {}}
         
-        # Handle priority classes first
-        for class_name in priority_classes:
-            mask = labels == CLASS_NAMES.index(class_name)
-            class_boxes = boxes[mask]
-            class_scores = scores[mask]
-            
-            if len(class_scores) > 0:
-                results['boxes'][class_name] = []
-                results['scores'][class_name] = []
-                
-                for box, score in zip(class_boxes, class_scores):
-                    if score > CLASS_THRESHOLDS.get(class_name, 0.5):
-                        results['boxes'][class_name].append(box)
-                        results['scores'][class_name].append(score)
-        
-        # Then handle remaining classes
+        # Process all predictions together
         for box, label, score in zip(boxes, labels, scores):
             class_name = CLASS_NAMES[label]
-            if class_name in priority_classes:
-                continue  # Already handled
-            
             threshold = CLASS_THRESHOLDS.get(class_name, 0.5)
+            
             if score > threshold:
                 if class_name not in results['boxes']:
                     results['boxes'][class_name] = []
@@ -524,6 +576,23 @@ class SpaceObjectDetector:
         self.logger.log_operation_time('rcnn_postprocess', time.time() - postprocess_start)
         return results
 
+    def _rcnn_worker(self):
+        """Background worker thread to run RCNN inference without blocking the main loop."""
+        import time
+        while self.rcnn_worker_running:
+            try:
+                frame = self.rcnn_queue.get(timeout=1)
+            except Exception:
+                continue
+
+            if frame is None:
+                break
+
+            # Run RCNN detection on the provided frame
+            predictions = self._run_rcnn_detection(frame)
+            self.last_rcnn_results = predictions
+            self.last_rcnn_frame = self.frame_count
+            self.rcnn_queue.task_done()
 
 class FastRCNNPredictor(torch.nn.Module):
     """Simple FastRCNN prediction head."""

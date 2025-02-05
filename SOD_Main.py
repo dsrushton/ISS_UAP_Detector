@@ -32,6 +32,9 @@ class SpaceObjectDetectionSystem:
     
     def __init__(self):
         """Initialize the detection system and its components."""
+        # Set FFmpeg log level to error only before any VideoCapture is created
+        os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'loglevel;error'
+        
         # These will be imported and initialized here to avoid circular imports
         from SOD_Detections import SpaceObjectDetector
         from SOD_Display import DisplayManager
@@ -70,8 +73,9 @@ class SpaceObjectDetectionSystem:
                 print("Failed to initialize detector model")
                 return False
                 
-            # Set logger for detector
+            # Set logger for detector and display
             self.detector.set_logger(self.logger)
+            self.display.set_logger(self.logger)
                 
             # Initialize capture system
             if not self.capture.initialize():
@@ -135,18 +139,15 @@ class SpaceObjectDetectionSystem:
             if 'space' in detections.rcnn_boxes and not detections.darkness_detected and 'nofeed' not in detections.rcnn_boxes:
                 debug_start = time.time()
                 
-                # Prepare data for all space boxes
+                # Use the detection results we already have
                 space_data = []
-                for space_box in detections.rcnn_boxes['space']:
-                    # Get box-specific detections
-                    box_results = self.detector.detect_anomalies(frame, space_box, self.display.avoid_boxes)
-                    if box_results is not None:
-                        space_data.append((
-                            space_box,
-                            box_results.contours,
-                            box_results.anomalies,
-                            box_results.metadata
-                        ))
+                if detections.space_box is not None:
+                    space_data.append((
+                        detections.space_box,
+                        detections.contours,
+                        detections.anomalies,
+                        detections.metadata
+                    ))
                 
                 # Create debug view with all space boxes
                 debug_view = self.display.create_debug_view(frame, space_data)
@@ -252,6 +253,11 @@ class SpaceObjectDetectionSystem:
             print(f"Connection attempt failed: {str(e)}")
             return False
 
+    def _setup_display(self):
+        """Set up display windows and callbacks."""
+        cv2.namedWindow('Main View')
+        cv2.setMouseCallback('Main View', self.display._mouse_callback)
+
     def process_video_stream(self, source: str, is_youtube: bool = False) -> None:
         """Main processing loop for video input."""
         if not self.initialize():
@@ -260,6 +266,9 @@ class SpaceObjectDetectionSystem:
         self.is_running = True
         consecutive_errors = 0
         backoff_time = RECONNECT_DELAY
+        
+        # Initial display setup
+        self._setup_display()
         
         while self.is_running:
             # Attempt connection
@@ -308,14 +317,13 @@ class SpaceObjectDetectionSystem:
         
         # Final cleanup
         print("\nShutting down...")
-        cv2.destroyAllWindows()
+        cv2.destroyAllWindows()  # Only destroy windows at final shutdown
         self.cleanup()
 
     def _cleanup(self):
         """Clean up resources."""
         if self.cap is not None:
             self.cap.release()
-        cv2.destroyAllWindows()
         if hasattr(self, 'video_writer') and self.video_writer is not None:
             self.video_writer.release()
         if hasattr(self, 'save_thread') and self.save_thread is not None:

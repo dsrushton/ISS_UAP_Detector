@@ -41,7 +41,12 @@ class StatusLogger:
             'contour_finding': deque(maxlen=100),
             'contour_analysis': deque(maxlen=100),
             'box_filtering': deque(maxlen=100),
-            'brightness_check': deque(maxlen=100)
+            'brightness_check': deque(maxlen=100),
+            # Debug view granular timing
+            'debug_frame_copy': deque(maxlen=100),
+            'debug_space_box': deque(maxlen=100),
+            'debug_contours': deque(maxlen=100),
+            'debug_anomalies': deque(maxlen=100)
         }
         
         # Ensure logs directory exists

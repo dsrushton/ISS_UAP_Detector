@@ -91,7 +91,16 @@ class VideoManager:
         self.frames_since_detection = 0
         self.frames_since_start = 0
         self.current_video_number = None
+        # Initialize next video number by checking AVI directory once
+        self.next_video_number = self._init_video_number()
         
+    def _init_video_number(self) -> int:
+        """Find the next available video number by checking AVI directory once at startup."""
+        i = 0
+        while os.path.exists(os.path.join(VIDEO_SAVE_DIR, f"{i:05d}.avi")):
+            i += 1
+        return i
+
     def set_source(self, source: str) -> bool:
         """Set the video source and initialize capture."""
         if self.cap is not None:
@@ -113,16 +122,10 @@ class VideoManager:
         return ret, frame
         
     def get_next_video_number(self) -> int:
-        """Find the next available video number by checking both video and jpg files."""
-        i = 0
-        # Check both AVI and JPG directories to find highest number
-        while True:
-            avi_exists = os.path.exists(os.path.join(VIDEO_SAVE_DIR, f"{i:05d}.avi"))
-            jpg_exists = any(f.startswith(f"{i:05d}-") for f in os.listdir(JPG_SAVE_DIR))
-            if not avi_exists and not jpg_exists:
-                break
-            i += 1
-        return i
+        """Get and increment the next video number."""
+        number = self.next_video_number
+        self.next_video_number += 1
+        return number
 
     def add_to_buffer(self, frame: np.ndarray, annotated_frame: np.ndarray, debug_view: Optional[np.ndarray]) -> None:
         """Add frame, annotated frame and debug view to buffers."""

@@ -6,6 +6,7 @@ Handles visualization of detection results and debug information.
 import cv2
 import numpy as np
 from typing import Dict, List, Tuple, Optional
+import time
 
 from SOD_Constants import (
     CLASS_COLORS, CLASS_NAMES, CROPPED_WIDTH,
@@ -20,6 +21,7 @@ class DisplayManager:
     def __init__(self):
         self.debug_view = None
         self.last_save_time = 0
+        self.logger = None
         
         # Avoid box state
         self.avoid_boxes = []
@@ -31,6 +33,10 @@ class DisplayManager:
         cv2.namedWindow('Main View')
         cv2.setMouseCallback('Main View', self._mouse_callback)
     
+    def set_logger(self, logger):
+        """Set the logger instance."""
+        self.logger = logger
+
     def _mouse_callback(self, event, x, y, flags, param):
         """Handle mouse events for avoid box drawing."""
         if event == cv2.EVENT_LBUTTONDOWN:
@@ -72,59 +78,76 @@ class DisplayManager:
         if not DEBUG_VIEW_ENABLED or not space_data:
             return np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8)
         
-        # Create full-size debug view
-        debug_view = np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8)
+        t0 = time.time()
         
-        # Create overlay for all annotations
-        overlay = np.zeros_like(debug_view)
+        # Create black background for debug view
+        debug_view = np.zeros_like(frame)
+        t1 = time.time()
+        if self.logger:
+            self.logger.log_operation_time('debug_frame_copy', t1 - t0)
         
-        # Process each space box and its data
+        # Create a mask for all space regions
+        space_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+        
+        # First, create the mask for all space regions
+        for space_box, _, _, _ in space_data:
+            x1, y1, x2, y2 = map(int, space_box)
+            cv2.rectangle(space_mask, (x1, y1), (x2, y2), 255, -1)
+            
+        # Find external contours of the combined regions
+        contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+        # Copy frame content for space regions
+        debug_view = np.where(space_mask[:, :, np.newaxis] == 255, frame, debug_view)
+        
+        # Draw the unified space box borders
+        cv2.drawContours(debug_view, contours, -1, (0, 255, 0), 1)
+        
+        # Now draw all debug information on top
         for idx, (space_box, contours, anomalies, metadata) in enumerate(space_data):
             x1, y1, x2, y2 = map(int, space_box)  # Ensure integer coordinates
             
-            # Extract and copy ROI to its actual position
-            roi = frame[y1:y2, x1:x2]
-            debug_view[y1:y2, x1:x2] = roi.copy()
+            t2 = time.time()
+            # Draw space box label
+            cv2.putText(debug_view, f"Space {idx + 1}", 
+                       (x1 + 5, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            t3 = time.time()
+            if self.logger:
+                self.logger.log_operation_time('debug_space_box', t3 - t2)
             
-            # Draw contours in their actual position
+            # Draw contours directly
             if contours is not None and len(contours) > 0:
-                # Shift contours to their absolute position
-                shifted_contours = []
-                for contour in contours:
-                    shifted_contour = contour.copy()
-                    shifted_contour[:, :, 0] += x1  # Add x offset
-                    shifted_contour[:, :, 1] += y1  # Add y offset
-                    shifted_contours.append(shifted_contour)
-                cv2.drawContours(overlay, shifted_contours, -1, CONTOUR_COLOR, 1)
+                t4 = time.time()
+                cv2.drawContours(debug_view, contours, -1, CONTOUR_COLOR, 1, offset=(x1, y1))
+                t5 = time.time()
+                if self.logger:
+                    self.logger.log_operation_time('debug_contours', t5 - t4)
             
             # Draw anomalies and metrics
             if anomalies is not None and metadata is not None and 'anomaly_metrics' in metadata:
+                t6 = time.time()
                 for anomaly_idx, (x, y, w, h) in enumerate(anomalies):
                     # Draw bounding box - expanded by 2 pixels in each direction
-                    cv2.rectangle(overlay, 
+                    cv2.rectangle(debug_view, 
                                 (x - 2, y - 2),  # Top-left expanded
                                 (x + w + 2, y + h + 2),  # Bottom-right expanded
-                                ANOMALY_BOX_COLOR, 3)
+                                ANOMALY_BOX_COLOR, 2)
                     
                     # Find matching metrics
                     if 'anomaly_metrics' in metadata and anomaly_idx < len(metadata['anomaly_metrics']):
                         metric = metadata['anomaly_metrics'][anomaly_idx]
                         if isinstance(metric, dict) and 'obj_brightness' in metric and 'contrast' in metric:
                             text = f"B:{metric['obj_brightness']:.1f} C:{metric['contrast']:.1f}"
-                            cv2.putText(overlay, text, 
+                            cv2.putText(debug_view, text, 
                                       (x, y - 5),
                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, ANOMALY_BOX_COLOR, 1)
-            
-            # Draw space box outline with index
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), 1)
-            # Add space box index
-            cv2.putText(overlay, f"Space {idx + 1}", 
-                       (x1 + 5, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                t7 = time.time()
+                if self.logger:
+                    self.logger.log_operation_time('debug_anomalies', t7 - t6)
         
-        # Blend overlay with debug view
-        alpha = 0.9  # Increased from 0.7 to 0.9 for better visibility
-        cv2.addWeighted(debug_view, alpha, overlay, 1.0, 0, debug_view)
-        
+        t8 = time.time()
+        if self.logger:
+            self.logger.log_operation_time('debug_view', t8 - t0)
         return debug_view
 
     def draw_detections(self, frame: np.ndarray, detections: DetectionResults) -> np.ndarray:
@@ -139,6 +162,37 @@ class DisplayManager:
         
         # Draw RCNN detections
         for class_name, boxes in detections.rcnn_boxes.items():
+            # Handle space boxes separately
+            if class_name == 'space':
+                if boxes and len(boxes) > 0:  # Ensure we have boxes
+                    color = CLASS_COLORS[class_name]
+                    scores = detections.rcnn_scores[class_name]
+                    
+                    # Create a mask for all space regions
+                    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+                    
+                    # Fill all space boxes in the mask
+                    for i, box in enumerate(boxes):
+                        x1, y1, x2, y2 = map(int, box)
+                        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)  # Fill
+                        
+                        # Draw labels for each box
+                        if i < len(scores):  # Ensure we have a matching score
+                            label_text = f"{class_name}: {scores[i]:.2f}"
+                            font = cv2.FONT_HERSHEY_SIMPLEX
+                            font_scale = 0.5
+                            thickness = 1
+                            text_y = y1 + 20
+                            text_x = x1 + 5
+                            cv2.putText(annotated_frame, label_text, (text_x, text_y), font, font_scale, color, thickness)
+                    
+                    # Find external contours of the combined regions
+                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    
+                    # Draw only the external contours to create unified borders without internals
+                    cv2.drawContours(annotated_frame, contours, -1, color, 2)
+                continue
+                
             scores = detections.rcnn_scores[class_name]
             color = CLASS_COLORS[class_name]
             
