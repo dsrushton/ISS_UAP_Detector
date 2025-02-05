@@ -196,7 +196,11 @@ class CaptureManager:
             print(f"Error saving raw frame: {str(e)}")
 
     def start_burst_capture(self, frame_count: int = 100) -> None:
-        """Start burst capture mode"""
+        """Start burst capture mode."""
+        self.burst_remaining = frame_count
+        #print(f"\nStarting burst capture of {frame_count} frames...")
+        # Ensure raw directory exists
+        os.makedirs(self.raw_dir, exist_ok=True)
 
     def process_burst(self, frame: np.ndarray) -> bool:
         """

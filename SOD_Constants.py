@@ -40,7 +40,7 @@ CLASS_COLORS = {
 
 # Detection Thresholds
 CLASS_THRESHOLDS = {
-    'space': 0.60,
+    'space': 0.50,
     'earth': 0.75,
     'iss': 0.75,
     'lf': 0.99,
@@ -92,7 +92,7 @@ MAX_LENS_FLARES = 3  # Maximum number of lens flares before skipping contour det
 
 
 # Anomaly Detection Parameters -- Using max_value RGB instead of weighted grayscale
-MIN_BRIGHTNESS = 25
+MIN_BRIGHTNESS = 20
 MAX_BRIGHTNESS = 240
 MIN_DARK_REGION_SIZE = 100
 GAUSSIAN_BLUR_SIZE = 5      # Size of Gaussian blur kernel (must be odd)
@@ -100,13 +100,13 @@ MORPH_KERNEL_SIZE = 3       # Size of morphological operation kernel
 
 # Detection Approval Parameters
 MAX_BG_BRIGHTNESS = 23
-MIN_CONTRAST = 7
-MIN_CONTOUR_WIDTH = 6
-MIN_CONTOUR_HEIGHT = 6
-MAX_CONTOUR_WIDTH = 200
-MAX_CONTOUR_HEIGHT = 200
+MIN_CONTRAST = 18
+MIN_CONTOUR_WIDTH = 3
+MIN_CONTOUR_HEIGHT = 3
+MAX_CONTOUR_WIDTH = 100
+MAX_CONTOUR_HEIGHT = 100
 MIN_CONTOUR_AREA = 36
-MAX_ASPECT_RATIO = 12.0
+MAX_ASPECT_RATIO = 20.0
 
 
 # Display Parameters
