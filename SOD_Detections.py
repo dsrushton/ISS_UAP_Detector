@@ -22,7 +22,7 @@ from SOD_Constants import (
     MAX_CONTOUR_WIDTH, MAX_CONTOUR_HEIGHT, MIN_CONTOUR_AREA,
     MAX_ASPECT_RATIO, MAX_BG_BRIGHTNESS, MIN_CONTRAST, MAX_LENS_FLARES,
     DARKNESS_AREA_THRESHOLD, MIN_DARK_REGION_SIZE, GAUSSIAN_BLUR_SIZE,
-    MORPH_KERNEL_SIZE
+    MORPH_KERNEL_SIZE, BORDER_MARGIN, MAX_VALID_DETECTIONS, MAX_CONTOURS_PER_FRAME
 )
 
 @dataclass
@@ -146,12 +146,12 @@ class SpaceObjectDetector:
         contours, _ = cv2.findContours(bright_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         # Limit number of contours processed
-        if len(contours) > 10:
-            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:10]
+        if len(contours) > MAX_CONTOURS_PER_FRAME:
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:MAX_CONTOURS_PER_FRAME]
             results.metadata['max_contours_reached'] = True
         self.logger.log_operation_time('contour_finding', time.time() - contour_start)
         
-        # Store all contours for visualization
+        # Store all contours for visualization (will convert to absolute later)
         results.contours = contours
         
         anomalies = []
@@ -160,24 +160,23 @@ class SpaceObjectDetector:
         
         # Get frame dimensions for border check
         frame_height, frame_width = roi.shape[:2]
-        BORDER_MARGIN = 5  # How many pixels from border to consider "touching"
         
         # Process each contour
         analysis_start = time.time()
         for contour in contours:
-            # Skip if we've already found 3 valid detections
-            if valid_detections >= 3:
+            # Skip if we've already found max valid detections
+            if valid_detections >= MAX_VALID_DETECTIONS:
                 break
             
             # Get contour properties
             x, y, w, h = cv2.boundingRect(contour)
             
             # Check if detection touches frame border
-            #if (x <= BORDER_MARGIN or 
-            #    y <= BORDER_MARGIN or 
-            #    x + w >= frame_width - BORDER_MARGIN or 
-            #    y + h >= frame_height - BORDER_MARGIN):
-            #    continue
+            if (x <= BORDER_MARGIN or 
+                y <= BORDER_MARGIN or 
+                x + w >= frame_width - BORDER_MARGIN or 
+                y + h >= frame_height - BORDER_MARGIN):
+                continue
             
             # Create binary mask for exact object boundaries
             obj_mask = np.zeros_like(edge_mask)
@@ -193,7 +192,7 @@ class SpaceObjectDetector:
                 continue
             
             # Store metrics for this anomaly
-            metrics['position'] = (x + x1, y + y1)  # Convert back to frame coordinates
+            metrics['position'] = (x + x1, y + y1)  # Convert to frame coordinates
             metrics['width'] = w
             metrics['height'] = h
             metrics['area'] = w * h
@@ -221,6 +220,9 @@ class SpaceObjectDetector:
             valid_detections += 1
         
         self.logger.log_operation_time('contour_analysis', time.time() - analysis_start)
+        
+        # Now convert contours to absolute coordinates after all analysis is done
+        results.contours = [cont + np.array([x1, y1])[np.newaxis, np.newaxis, :] for cont in contours]
         
         # Store results
         results.metadata['anomaly_metrics'] = anomaly_metrics
@@ -593,6 +595,11 @@ class SpaceObjectDetector:
             self.last_rcnn_results = predictions
             self.last_rcnn_frame = self.frame_count
             self.rcnn_queue.task_done()
+
+    def set_rcnn_cycle(self, fps: int):
+        """Update the RCNN detection cycle based on frame rate."""
+        self.rcnn_cycle = max(1, fps)  # Run RCNN once per second
+        print(f"RCNN cycle set to: {self.rcnn_cycle} frames")
 
 class FastRCNNPredictor(torch.nn.Module):
     """Simple FastRCNN prediction head."""

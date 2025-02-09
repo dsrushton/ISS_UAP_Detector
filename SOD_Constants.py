@@ -40,7 +40,7 @@ CLASS_COLORS = {
 
 # Detection Thresholds
 CLASS_THRESHOLDS = {
-    'space': 0.50,
+    'space': 0.95,
     'earth': 0.75,
     'iss': 0.75,
     'lf': 0.99,
@@ -72,7 +72,7 @@ RAW_SUBDIR = "Burst_raw"
  # Better Tests
 TEST_IMAGE_PATH = "./Test_Image_Collection/000512.jpg"
 #TEST_IMAGE_PATH = "./Test_Image_Collection/000777.jpg"
-#TEST_IMAGE_PATH = "./Test_Image_Collection/000912.jpg
+#TEST_IMAGE_PATH = "./Test_Image_Collection/000912.jpg"
 #TEST_IMAGE_PATH = "./Test_Image_Collection/\001469.jpg"
 #TEST_IMAGE_PATH = "./Test_Image_Collection/001641.jpg"
 #TEST_IMAGE_PATH = "./Test_Image_Collection/00195-a.jpg"
@@ -82,12 +82,11 @@ TEST_IMAGE_PATH = "./Test_Image_Collection/000512.jpg"
 BUFFER_SECONDS = 3
 POST_DETECTION_SECONDS = 2.1
 SAVE_INTERVAL = 2.0  # Seconds between .jpg saves
-VIDEO_FPS = 54
 
 # RCNN Parameters
 MAX_RCNN_BOXES = 10
-DARKNESS_AREA_THRESHOLD = 0.25 #Total darkness area threshold
-RCNN_DETECTION_CYCLE = 54 #Frame interval for RCNN detection
+DARKNESS_AREA_THRESHOLD = 0.25  # Total darkness area threshold
+RCNN_DETECTION_CYCLE = 54  # Default cycle, will be updated based on actual fps
 MAX_LENS_FLARES = 3  # Maximum number of lens flares before skipping contour detection
 
 
@@ -96,7 +95,7 @@ MIN_BRIGHTNESS = 20
 MAX_BRIGHTNESS = 240
 MIN_DARK_REGION_SIZE = 100
 GAUSSIAN_BLUR_SIZE = 5      # Size of Gaussian blur kernel (must be odd)
-MORPH_KERNEL_SIZE = 3       # Size of morphological operation kernel
+MORPH_KERNEL_SIZE = 2       # Size of morphological operation kernel
 
 # Detection Approval Parameters
 MAX_BG_BRIGHTNESS = 23
@@ -107,6 +106,11 @@ MAX_CONTOUR_WIDTH = 100
 MAX_CONTOUR_HEIGHT = 100
 MIN_CONTOUR_AREA = 36
 MAX_ASPECT_RATIO = 20.0
+
+#Filtering Options
+BORDER_MARGIN = 5  # How many pixels from space box border to consider "touching"
+MAX_VALID_DETECTIONS = 5 # Maximum number of valid detections per frame
+MAX_CONTOURS_PER_FRAME = 10  # Maximum number of contours to process per frame
 
 
 # Display Parameters
