@@ -17,7 +17,7 @@ from SOD_Constants import (
     TEST_IMAGE_PATH,
     RECONNECT_DELAY,
     VIDEO_SAVE_DIR,
-    VIDEO_FPS,
+    #VIDEO_FPS,
     BUFFER_SECONDS
 )
 from SOD_Utils import get_best_stream_url, crop_frame
@@ -141,9 +141,10 @@ class SpaceObjectDetectionSystem:
                 
                 # Use the detection results we already have
                 space_data = []
-                if detections.space_box is not None:
+                if 'space' in detections.rcnn_boxes:
+                    # Pass the raw RCNN boxes for proper merging
                     space_data.append((
-                        detections.space_box,
+                        detections.rcnn_boxes['space'],  # Raw boxes
                         detections.contours,
                         detections.anomalies,
                         detections.metadata
@@ -245,6 +246,18 @@ class SpaceObjectDetectionSystem:
             if not self.cap.isOpened():
                 print("Failed to open video capture")
                 return False
+                
+            # Get actual frame rate from capture
+            fps = self.cap.get(cv2.CAP_PROP_FPS)
+            if fps <= 0:
+                print("Warning: Invalid frame rate detected, using default 30 fps")
+                fps = 30
+            else:
+                print(f"Detected frame rate: {fps:.2f} fps")
+            
+            # Update RCNN cycle and video parameters based on actual fps
+            self.detector.set_rcnn_cycle(int(fps))  # Run RCNN once per second
+            self.video.set_fps(fps)  # Update video recording fps
                 
             print("Successfully connected to video source")
             return True

@@ -14,7 +14,7 @@ import os
 
 from SOD_Constants import (
     BUFFER_SECONDS,
-    VIDEO_FPS,
+    #VIDEO_FPS,
     VIDEO_SAVE_DIR,
     JPG_SAVE_DIR,
     POST_DETECTION_SECONDS
@@ -83,9 +83,10 @@ class VideoManager:
     
     def __init__(self):
         self.cap: Optional[cv2.VideoCapture] = None
-        self.frame_buffer = deque(maxlen=BUFFER_SECONDS * VIDEO_FPS)
-        self.annotated_buffer = deque(maxlen=BUFFER_SECONDS * VIDEO_FPS)
-        self.debug_buffer = deque(maxlen=BUFFER_SECONDS * VIDEO_FPS)
+        self.fps = 54  # Default fallback FPS
+        self.frame_buffer = deque(maxlen=1)  # Will be updated when fps is set
+        self.annotated_buffer = deque(maxlen=1)  # Will be updated when fps is set
+        self.debug_buffer = deque(maxlen=1)  # Will be updated when fps is set
         self.video_writer = ThreadedVideoWriter()
         self.recording = False
         self.frames_since_detection = 0
@@ -107,11 +108,7 @@ class VideoManager:
             self.cap.release()
             
         self.cap = cv2.VideoCapture(source)
-        if self.cap.isOpened():
-            # Set frame rate explicitly
-            self.cap.set(cv2.CAP_PROP_FPS, VIDEO_FPS)
-            return True
-        return False
+        return self.cap.isOpened()
         
     def get_frame(self) -> Tuple[bool, Optional[np.ndarray]]:
         """Get the next frame from the video source."""
@@ -143,7 +140,7 @@ class VideoManager:
         filename = os.path.join(VIDEO_SAVE_DIR, f"{self.current_video_number:05d}.avi")
             
         # Initialize video writer
-        if self.video_writer.start(filename, VIDEO_FPS, frame_size):
+        if self.video_writer.start(filename, self.fps, frame_size):
             # Write buffered frames first, using the detection's debug view
             for annotated in self.annotated_buffer:
                 if debug_view is not None:
@@ -185,7 +182,7 @@ class VideoManager:
             self.frames_since_detection += 1
             
         # Stop after POST_DETECTION_SECONDS with no detections
-        if self.frames_since_detection >= VIDEO_FPS * POST_DETECTION_SECONDS:
+        if self.frames_since_detection >= self.fps * POST_DETECTION_SECONDS:
             self.stop_recording()
                 
     def cleanup(self) -> None:
@@ -195,4 +192,14 @@ class VideoManager:
         self.stop_recording()
         self.frame_buffer.clear()
         self.annotated_buffer.clear()
-        self.debug_buffer.clear() 
+        self.debug_buffer.clear()
+
+    def set_fps(self, fps: float):
+        """Update FPS and buffer sizes."""
+        self.fps = max(1.0, fps)  # Ensure positive FPS
+        buffer_size = int(BUFFER_SECONDS * self.fps)
+        self.frame_buffer = deque(maxlen=buffer_size)
+        self.annotated_buffer = deque(maxlen=buffer_size)
+        self.debug_buffer = deque(maxlen=buffer_size)
+        print(f"Video FPS set to: {self.fps:.2f}")
+        print(f"Buffer size set to: {buffer_size} frames") 

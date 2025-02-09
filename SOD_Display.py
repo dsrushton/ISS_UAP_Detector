@@ -68,86 +68,53 @@ class DisplayManager:
                 self.avoid_start_pos = None
 
     def create_debug_view(self, frame: np.ndarray, space_data: list) -> np.ndarray:
-        """
-        Create debug visualization for multiple space boxes.
-        
-        Args:
-            frame: Full frame for extracting ROIs
-            space_data: List of tuples (space_box, contours, anomalies, metadata)
-        """
+        """Create debug visualization using the same structure as main view."""
         if not DEBUG_VIEW_ENABLED or not space_data:
             return np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8)
-        
-        t0 = time.time()
-        
+            
         # Create black background for debug view
         debug_view = np.zeros_like(frame)
-        t1 = time.time()
-        if self.logger:
-            self.logger.log_operation_time('debug_frame_copy', t1 - t0)
+        
+        # Get raw boxes from first entry
+        boxes, contours, anomalies, metadata = space_data[0]
         
         # Create a mask for all space regions
-        space_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+        mask = np.zeros(frame.shape[:2], dtype=np.uint8)
         
-        # First, create the mask for all space regions
-        for space_box, _, _, _ in space_data:
-            x1, y1, x2, y2 = map(int, space_box)
-            cv2.rectangle(space_mask, (x1, y1), (x2, y2), 255, -1)
-            
-        # Find external contours of the combined regions
-        contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
+        # Fill all space boxes in the mask
+        for box in boxes:
+            x1, y1, x2, y2 = map(int, box)
+            cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)  # Fill
+        
         # Copy frame content for space regions
-        debug_view = np.where(space_mask[:, :, np.newaxis] == 255, frame, debug_view)
+        debug_view = np.where(mask[:, :, np.newaxis] == 255, frame, debug_view)
         
-        # Draw the unified space box borders
-        cv2.drawContours(debug_view, contours, -1, (0, 255, 0), 1)
+        # Find external contours of the combined regions
+        space_contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Now draw all debug information on top
-        for idx, (space_box, contours, anomalies, metadata) in enumerate(space_data):
-            x1, y1, x2, y2 = map(int, space_box)  # Ensure integer coordinates
-            
-            t2 = time.time()
-            # Draw space box label
-            cv2.putText(debug_view, f"Space {idx + 1}", 
-                       (x1 + 5, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            t3 = time.time()
-            if self.logger:
-                self.logger.log_operation_time('debug_space_box', t3 - t2)
-            
-            # Draw contours directly
-            if contours is not None and len(contours) > 0:
-                t4 = time.time()
-                cv2.drawContours(debug_view, contours, -1, CONTOUR_COLOR, 1, offset=(x1, y1))
-                t5 = time.time()
-                if self.logger:
-                    self.logger.log_operation_time('debug_contours', t5 - t4)
-            
-            # Draw anomalies and metrics
-            if anomalies is not None and metadata is not None and 'anomaly_metrics' in metadata:
-                t6 = time.time()
-                for anomaly_idx, (x, y, w, h) in enumerate(anomalies):
-                    # Draw bounding box - expanded by 2 pixels in each direction
-                    cv2.rectangle(debug_view, 
-                                (x - 2, y - 2),  # Top-left expanded
-                                (x + w + 2, y + h + 2),  # Bottom-right expanded
-                                ANOMALY_BOX_COLOR, 2)
-                    
-                    # Find matching metrics
-                    if 'anomaly_metrics' in metadata and anomaly_idx < len(metadata['anomaly_metrics']):
-                        metric = metadata['anomaly_metrics'][anomaly_idx]
-                        if isinstance(metric, dict) and 'obj_brightness' in metric and 'contrast' in metric:
-                            text = f"B:{metric['obj_brightness']:.1f} C:{metric['contrast']:.1f}"
-                            cv2.putText(debug_view, text, 
-                                      (x, y - 5),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.4, ANOMALY_BOX_COLOR, 1)
-                t7 = time.time()
-                if self.logger:
-                    self.logger.log_operation_time('debug_anomalies', t7 - t6)
+        # Draw only the external contours to create unified borders without internals
+        cv2.drawContours(debug_view, space_contours, -1, CLASS_COLORS['space'], 2)
         
-        t8 = time.time()
-        if self.logger:
-            self.logger.log_operation_time('debug_view', t8 - t0)
+        # Draw detection contours - now in absolute coordinates
+        if contours is not None:
+            cv2.drawContours(debug_view, contours, -1, CONTOUR_COLOR, 1)
+        
+        # Draw anomaly boxes and metrics
+        if anomalies is not None and metadata is not None and 'anomaly_metrics' in metadata:
+            for anomaly_idx, (x, y, w, h) in enumerate(anomalies):
+                cv2.rectangle(debug_view, 
+                            (x - 2, y - 2),
+                            (x + w + 2, y + h + 2),
+                            ANOMALY_BOX_COLOR, 2)
+                
+                if anomaly_idx < len(metadata['anomaly_metrics']):
+                    metric = metadata['anomaly_metrics'][anomaly_idx]
+                    if isinstance(metric, dict) and 'obj_brightness' in metric and 'contrast' in metric:
+                        text = f"B:{metric['obj_brightness']:.1f} C:{metric['contrast']:.1f}"
+                        cv2.putText(debug_view, text, 
+                                  (x, y - 5),
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.4, ANOMALY_BOX_COLOR, 1)
+        
         return debug_view
 
     def draw_detections(self, frame: np.ndarray, detections: DetectionResults) -> np.ndarray:
