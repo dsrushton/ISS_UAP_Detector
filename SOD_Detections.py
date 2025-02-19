@@ -14,15 +14,11 @@ from typing import List, Dict, Optional, Tuple, Any
 import time
 import threading
 import queue
+import importlib
 
+# Only import non-changing constants at module level
 from SOD_Constants import (
-    DEVICE, MODEL_PATH, CLASS_NAMES, CLASS_THRESHOLDS,
-    MIN_BRIGHTNESS, MAX_BRIGHTNESS, CROPPED_WIDTH,
-    RCNN_DETECTION_CYCLE, MIN_CONTOUR_WIDTH, MIN_CONTOUR_HEIGHT,
-    MAX_CONTOUR_WIDTH, MAX_CONTOUR_HEIGHT, MIN_CONTOUR_AREA,
-    MAX_ASPECT_RATIO, MAX_BG_BRIGHTNESS, MIN_CONTRAST, MAX_LENS_FLARES,
-    DARKNESS_AREA_THRESHOLD, MIN_DARK_REGION_SIZE, GAUSSIAN_BLUR_SIZE,
-    MORPH_KERNEL_SIZE, BORDER_MARGIN, MAX_VALID_DETECTIONS, MAX_CONTOURS_PER_FRAME
+    DEVICE, MODEL_PATH, CLASS_NAMES, CLASS_THRESHOLDS
 )
 
 @dataclass
@@ -59,11 +55,13 @@ class DetectionResults:
 class SpaceObjectDetector:
     """Handles object detection using RCNN and first principles analysis."""
     
-    def __init__(self, rcnn_cycle: int = RCNN_DETECTION_CYCLE):
+    def __init__(self):
         """Initialize detector with frame cycle for RCNN."""
         self.model = None
         self.transform = None
-        self.rcnn_cycle = rcnn_cycle
+        # Get latest constants
+        import SOD_Constants as const
+        self.rcnn_cycle = const.RCNN_DETECTION_CYCLE  # Use dynamic constant
         self.frame_count = 0
         self.logger = None
         
@@ -98,143 +96,212 @@ class SpaceObjectDetector:
 
     def detect_anomalies(self, frame: np.ndarray, space_box: tuple, avoid_boxes: List[Tuple[int, int, int, int]] = None) -> DetectionResults:
         """Find relevant contour distinctions in space region."""
-        results = DetectionResults()
-        x1, y1, x2, y2 = space_box
-        roi = frame[y1:y2, x1:x2]
-        
-        # Convert to max RGB if needed
-        if len(roi.shape) == 3:
-            roi_max = np.max(roi, axis=2)
-        else:
-            roi_max = roi
+        try:
+            # Get latest constants
+            import SOD_Constants as const
             
-        # Apply Gaussian blur to reduce noise
-        mask_start = time.time()
-        blurred = cv2.GaussianBlur(roi_max, (GAUSSIAN_BLUR_SIZE, GAUSSIAN_BLUR_SIZE), 0)
-        
-        # Create binary mask for dark background
-        _, dark_mask = cv2.threshold(blurred, MAX_BG_BRIGHTNESS, 255, cv2.THRESH_BINARY_INV)
-        
-        # Check if dark area has any 100x100 region that's completely dark
-        kernel = np.ones((MIN_DARK_REGION_SIZE, MIN_DARK_REGION_SIZE), np.uint8)
-        valid_region_mask = cv2.erode(dark_mask, kernel, iterations=1)
-        
-        valid_dark_region = cv2.countNonZero(valid_region_mask) > 0
-        
-        if not valid_dark_region:
-            # Return empty results if no valid dark region found
-            results.metadata['reason'] = 'no_valid_dark_region'
-            return results
-        
-        # Create binary mask for bright objects
-        _, bright_mask = cv2.threshold(blurred, MIN_BRIGHTNESS, 255, cv2.THRESH_BINARY)
-        
-        # Combine masks to get regions where bright objects meet dark background
-        kernel = np.ones((MORPH_KERNEL_SIZE, MORPH_KERNEL_SIZE), np.uint8)
-        bright_mask = cv2.dilate(bright_mask, kernel, iterations=1)
-        dark_mask = cv2.dilate(dark_mask, kernel, iterations=1)
-        
-        # Get intersection of dilated masks
-        edge_mask = cv2.bitwise_and(bright_mask, dark_mask)
-        
-        # Clean up the mask
-        edge_mask = cv2.morphologyEx(edge_mask, cv2.MORPH_CLOSE, kernel)
-        self.logger.log_operation_time('mask_creation', time.time() - mask_start)
-        
-        # Find contours using the bright mask
-        contour_start = time.time()
-        contours, _ = cv2.findContours(bright_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # Limit number of contours processed
-        if len(contours) > MAX_CONTOURS_PER_FRAME:
-            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:MAX_CONTOURS_PER_FRAME]
-            results.metadata['max_contours_reached'] = True
-        self.logger.log_operation_time('contour_finding', time.time() - contour_start)
-        
-        # Store all contours for visualization (will convert to absolute later)
-        results.contours = contours
-        
-        anomalies = []
-        anomaly_metrics = []
-        valid_detections = 0
-        
-        # Get frame dimensions for border check
-        frame_height, frame_width = roi.shape[:2]
-        
-        # Process each contour
-        analysis_start = time.time()
-        for contour in contours:
-            # Skip if we've already found max valid detections
-            if valid_detections >= MAX_VALID_DETECTIONS:
-                break
+            results = DetectionResults()
+            x1, y1, x2, y2 = space_box  # This is in global coordinates
             
-            # Get contour properties
-            x, y, w, h = cv2.boundingRect(contour)
+            roi = frame[y1:y2, x1:x2]
             
-            # Check if detection touches frame border
-            if (x <= BORDER_MARGIN or 
-                y <= BORDER_MARGIN or 
-                x + w >= frame_width - BORDER_MARGIN or 
-                y + h >= frame_height - BORDER_MARGIN):
-                continue
+            # Create a mask for the exact space region using the actual space contour
+            space_mask = np.zeros((y2-y1, x2-x1), dtype=np.uint8)
+            if hasattr(self, 'last_rcnn_results') and 'boxes' in self.last_rcnn_results:
+                space_boxes = self.last_rcnn_results['boxes'].get('space', [])
+                for box in space_boxes:
+                    # Convert global coordinates to ROI coordinates
+                    sx1, sy1, sx2, sy2 = box
+                    local_x1 = max(0, sx1 - x1)
+                    local_y1 = max(0, sy1 - y1)
+                    local_x2 = min(x2-x1, sx2 - x1)
+                    local_y2 = min(y2-y1, sy2 - y1)
+                    cv2.rectangle(space_mask, (local_x1, local_y1), (local_x2, local_y2), 255, -1)
+                
+                # Find external contour of all space regions combined
+                space_contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                # Clear mask and redraw only the external contour
+                space_mask.fill(0)
+                cv2.drawContours(space_mask, space_contours, -1, 255, -1)
             
-            # Create binary mask for exact object boundaries
-            obj_mask = np.zeros_like(edge_mask)
-            cv2.drawContours(obj_mask, [contour], -1, 255, -1)
+            # Convert to max RGB if needed
+            if len(roi.shape) == 3:
+                roi_max = np.max(roi, axis=2)
+            else:
+                roi_max = roi
             
-            # Only proceed if analyze_object approves this contour
-            is_valid, metrics = self.analyze_object(roi_max, obj_mask, w, h, contour)
-            if not is_valid:
-                continue
+            # Apply Gaussian blur to reduce noise
+            mask_start = time.time()
+            blur_size = const.get_value('GAUSSIAN_BLUR_SIZE')
+            blurred = cv2.GaussianBlur(roi_max, (blur_size, blur_size), 0)
             
-            # Skip if contrast is too low or negative
-            if metrics['contrast'] < MIN_CONTRAST:
-                continue
+            # Create binary mask for dark background
+            _, dark_mask = cv2.threshold(blurred, const.get_value('MAX_BG_BRIGHTNESS'), 255, cv2.THRESH_BINARY_INV)
+            dark_mask = cv2.bitwise_and(dark_mask, space_mask)  # Limit to space region
             
-            # Store metrics for this anomaly
-            metrics['position'] = (x + x1, y + y1)  # Convert to frame coordinates
-            metrics['width'] = w
-            metrics['height'] = h
-            metrics['area'] = w * h
+            # # Check if dark area has any 100x100 region that's completely dark
+            # dark_region_size = const.get_value('MIN_DARK_REGION_SIZE')
+            # kernel = np.ones((dark_region_size, dark_region_size), np.uint8)
+            # valid_region_mask = cv2.erode(dark_mask, kernel, iterations=1)
             
-            # Convert to absolute coordinates
-            abs_x = x + x1
-            abs_y = y + y1
+            # valid_dark_region = cv2.countNonZero(valid_region_mask) > 0
             
-            # Skip if in any avoid box
-            box_start = time.time()
-            if avoid_boxes:
-                in_avoid = False
-                for avoid_box in avoid_boxes:
-                    ax1, ay1, ax2, ay2 = avoid_box
-                    if (abs_x < ax2 and abs_x + w > ax1 and
-                        abs_y < ay2 and abs_y + h > ay1):
-                        in_avoid = True
+            # if not valid_dark_region:
+            #     # Return empty results if no valid dark region found
+            #     results.metadata['reason'] = 'no_valid_dark_region'
+            #     return results
+            
+            # Create binary mask for bright objects
+            _, bright_mask = cv2.threshold(blurred, const.get_value('MIN_OBJECT_BRIGHTNESS'), 255, cv2.THRESH_BINARY)
+            bright_mask = cv2.bitwise_and(bright_mask, space_mask)  # Limit to space region
+            
+            # Combine masks to get regions where bright objects meet dark background
+            morph_size = const.get_value('MORPH_KERNEL_SIZE')
+            kernel = np.ones((morph_size, morph_size), np.uint8)
+            bright_mask = cv2.dilate(bright_mask, kernel, iterations=1)
+            dark_mask = cv2.dilate(dark_mask, kernel, iterations=1)
+            
+            # Get intersection of dilated masks
+            edge_mask = cv2.bitwise_and(bright_mask, dark_mask)
+            edge_mask = cv2.bitwise_and(edge_mask, space_mask)  # Ensure we stay within space region
+            
+            # Clean up the mask
+            edge_mask = cv2.morphologyEx(edge_mask, cv2.MORPH_CLOSE, kernel)
+            self.logger.log_operation_time('mask_creation', time.time() - mask_start)
+            
+            # Find contours using the bright mask
+            contour_start = time.time()
+            contours, _ = cv2.findContours(bright_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Limit number of contours processed
+            max_contours = const.get_value('MAX_CONTOURS_PER_FRAME')
+            if len(contours) > max_contours:
+                contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_contours]
+                results.metadata['max_contours_reached'] = True
+            self.logger.log_operation_time('contour_finding', time.time() - contour_start)
+            
+            # Store all contours for visualization (will convert to absolute later)
+            results.contours = contours
+            
+            anomalies = []
+            anomaly_metrics = []
+            valid_detections = 0
+            
+            # Get frame dimensions for border check
+            frame_height, frame_width = roi.shape[:2]
+            
+            # Process each contour
+            analysis_start = time.time()
+            max_valid = const.get_value('MAX_VALID_DETECTIONS')
+            border_margin = const.get_value('BORDER_MARGIN')
+            min_contrast = const.get_value('MIN_CONTRAST')
+            
+            for contour in contours:
+                # Skip if we've already found max valid detections
+                if valid_detections >= max_valid:
+                    break
+                
+                # Get contour properties
+                x, y, w, h = cv2.boundingRect(contour)
+                
+                # Convert to global coordinates for filtering
+                abs_x = x + x1
+                abs_y = y + y1
+                
+                # Check if any part of the contour is too close to space contour
+                too_close_to_border = False
+                for space_contour in space_contours:
+                    # Test each point in the contour
+                    contour_points = contour.squeeze()
+                    if len(contour_points.shape) == 1:  # Single point
+                        contour_points = contour_points.reshape(1, 2)
+                    for point in contour_points:
+                        dist = cv2.pointPolygonTest(space_contour, (float(point[0]), float(point[1])), True)
+                        if abs(dist) < border_margin:
+                            too_close_to_border = True
+                            break
+                    if too_close_to_border:
                         break
-                if in_avoid:
+                
+                if too_close_to_border:
                     continue
-            self.logger.log_operation_time('box_filtering', time.time() - box_start)
+                
+                # Create binary mask for exact object boundaries
+                obj_mask = np.zeros_like(edge_mask)
+                cv2.drawContours(obj_mask, [contour], -1, 255, -1)
+                
+                # Only proceed if analyze_object approves this contour
+                is_valid, metrics = self.analyze_object(roi_max, obj_mask, w, h, contour)
+                if not is_valid:
+                    continue
+                
+                # Skip if contrast is too low or negative
+                if metrics['contrast'] < min_contrast:
+                    continue
+                
+                # Only collect filter boxes if we have a potentially valid detection
+                filter_boxes = []
+                
+                # Add avoid boxes
+                if avoid_boxes:
+                    filter_boxes.extend(avoid_boxes)
+                
+                # Add RCNN boxes for filtering (lf, iss, panel)
+                for box_type in ['lf', 'iss', 'panel']:
+                    if box_type in self.last_rcnn_results['boxes']:
+                        # Check if this box type should be filtered
+                        if ((box_type == 'iss' and not const.get_value('FILTER_ISS')) or
+                            (box_type == 'panel' and not const.get_value('FILTER_PANEL')) or
+                            (box_type == 'lf' and not const.get_value('FILTER_LF'))):
+                            continue
+                        boxes = self.last_rcnn_results['boxes'][box_type]
+                        filter_boxes.extend(boxes)
+                
+                # Check if anomaly overlaps with any filtering box (in global coordinates)
+                overlaps = False
+                for i, (fx1, fy1, fx2, fy2) in enumerate(filter_boxes):
+                    if (abs_x < fx2 and abs_x + w > fx1 and
+                        abs_y < fy2 and abs_y + h > fy1):
+                        overlaps = True
+                        break
+                
+                if overlaps:
+                    continue
+                
+                # Store metrics for this anomaly
+                metrics['position'] = (abs_x, abs_y)  # Already in global coordinates
+                metrics['width'] = w
+                metrics['height'] = h
+                metrics['area'] = w * h
+                
+                anomalies.append((abs_x, abs_y, w, h))
+                anomaly_metrics.append(metrics)
+                valid_detections += 1
             
-            anomalies.append((abs_x, abs_y, w, h))
-            anomaly_metrics.append(metrics)
-            valid_detections += 1
-        
-        self.logger.log_operation_time('contour_analysis', time.time() - analysis_start)
-        
-        # Now convert contours to absolute coordinates after all analysis is done
-        results.contours = [cont + np.array([x1, y1])[np.newaxis, np.newaxis, :] for cont in contours]
-        
-        # Store results
-        results.metadata['anomaly_metrics'] = anomaly_metrics
-        results.metadata['total_contours'] = len(contours)
-        results.metadata['valid_detections'] = valid_detections
-        results.add_anomalies(anomalies)
-        
-        return results
+            self.logger.log_operation_time('contour_analysis', time.time() - analysis_start)
+            
+            # Now convert contours to absolute coordinates after all analysis is done
+            results.contours = [cont + np.array([x1, y1])[np.newaxis, np.newaxis, :] for cont in contours]
+            
+            # Store results
+            results.metadata['anomaly_metrics'] = anomaly_metrics
+            results.metadata['total_contours'] = len(contours)
+            results.metadata['valid_detections'] = valid_detections
+            results.add_anomalies(anomalies)
+            
+            return results
+            
+        except Exception as e:
+            print(f"Error in detect_anomalies: {e}")
+            return DetectionResults()
     
     def analyze_object(self, frame: np.ndarray, binary_mask: np.ndarray, w: int, h: int, contour: np.ndarray = None) -> bool:
         """Analyze if object passes detection criteria"""
         try:
+            # Get latest constants
+            import SOD_Constants as const
+            
             # Use provided contour if available, otherwise find it
             if contour is None:
                 contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -251,15 +318,22 @@ class SpaceObjectDetector:
                 'height': h
             }
             
+            # Get size requirements
+            min_dim = const.get_value('MIN_CONTOUR_DIMENSION')
+            max_width = const.get_value('MAX_CONTOUR_WIDTH')
+            max_height = const.get_value('MAX_CONTOUR_HEIGHT')
+            min_area = const.get_value('MIN_CONTOUR_AREA')
+            max_ratio = const.get_value('MAX_ASPECT_RATIO')
+            
             # STRICT SIZE REQUIREMENTS FIRST
-            if (w < MIN_CONTOUR_WIDTH or h < MIN_CONTOUR_HEIGHT or
-                w > MAX_CONTOUR_WIDTH or h > MAX_CONTOUR_HEIGHT):
+            if (w < min_dim or h < min_dim or
+                w > max_width or h > max_height):
                 return False, metrics
             
-            if metrics['area'] < MIN_CONTOUR_AREA:
+            if metrics['area'] < min_area:
                 return False, metrics
             
-            if metrics['aspect_ratio'] > MAX_ASPECT_RATIO or metrics['aspect_ratio'] < (1/MAX_ASPECT_RATIO):
+            if metrics['aspect_ratio'] > max_ratio or metrics['aspect_ratio'] < (1/max_ratio):
                 return False, metrics
             
             # Create precise masks for object and background
@@ -267,7 +341,8 @@ class SpaceObjectDetector:
             cv2.drawContours(mask, [contour], -1, 255, -1)
             
             # Create dilated ring around object for background measurement
-            kernel = np.ones((MORPH_KERNEL_SIZE, MORPH_KERNEL_SIZE), np.uint8)
+            morph_size = const.get_value('MORPH_KERNEL_SIZE')
+            kernel = np.ones((morph_size, morph_size), np.uint8)
             bg_mask = cv2.dilate(mask, kernel, iterations=2)
             bg_mask = cv2.bitwise_xor(bg_mask, mask)  # Creates ring around object
             
@@ -288,12 +363,18 @@ class SpaceObjectDetector:
                 'contrast': contrast
             })
             
+            # Get brightness thresholds
+            min_obj_bright = const.get_value('MIN_OBJECT_BRIGHTNESS')
+            max_obj_bright = const.get_value('MAX_OBJECT_BRIGHTNESS')
+            max_bg_bright = const.get_value('MAX_BG_BRIGHTNESS')
+            min_contrast = const.get_value('MIN_CONTRAST')
+            
             # Brightness checks
-            if not (MIN_BRIGHTNESS < obj_brightness < MAX_BRIGHTNESS):
+            if not (min_obj_bright < obj_brightness < max_obj_bright):
                 return False, metrics
-            if bg_brightness > MAX_BG_BRIGHTNESS:
+            if bg_brightness > max_bg_bright:
                 return False, metrics
-            if contrast < MIN_CONTRAST:
+            if contrast < min_contrast:
                 return False, metrics
             
             return True, metrics
@@ -358,6 +439,9 @@ class SpaceObjectDetector:
     def process_frame(self, frame: np.ndarray, avoid_boxes: List[Tuple[int, int, int, int]] = None) -> Optional[DetectionResults]:
         """Process frame through detection pipeline."""
         try:
+            # Get latest constants
+            import SOD_Constants as const
+            
             self.frame_count += 1
             is_rcnn_frame = (self.frame_count % self.rcnn_cycle) == 0
             results = DetectionResults(frame_number=self.frame_count)
@@ -380,7 +464,7 @@ class SpaceObjectDetector:
                 for box in self.last_rcnn_results['boxes']['td']:
                     x1, y1, x2, y2 = box
                     td_area = (x2 - x1) * (y2 - y1)
-                    if td_area > frame_area * DARKNESS_AREA_THRESHOLD:
+                    if td_area > frame_area * const.get_value('DARKNESS_AREA_THRESHOLD'):
                         results.darkness_detected = True
                         break
             
@@ -391,7 +475,7 @@ class SpaceObjectDetector:
             # Check lens flare count
             if 'lf' in self.last_rcnn_results['boxes']:
                 lf_count = len(self.last_rcnn_results['boxes']['lf'])
-                if lf_count >= MAX_LENS_FLARES:
+                if lf_count >= const.get_value('MAX_LENS_FLARES'):
                     results.metadata['skip_save'] = 'too_many_lens_flares'
             
             # Only proceed with anomaly detection if we have a space region
@@ -437,56 +521,6 @@ class SpaceObjectDetector:
                             if 'anomaly_metrics' in box_results.metadata:
                                 all_metrics.extend(box_results.metadata['anomaly_metrics'])
                 
-                # Get lens flare boxes for filtering
-                lf_boxes = self.last_rcnn_results['boxes'].get('lf', [])
-                
-                # Get ISS and panel boxes for filtering
-                panel_boxes = self.last_rcnn_results['boxes'].get('panel', [])
-                iss_boxes = self.last_rcnn_results['boxes'].get('iss', [])
-                
-                # If we have lens flare boxes, filter anomalies that overlap with them
-                if (lf_boxes or panel_boxes or iss_boxes) and all_anomalies:
-                    filtered_anomalies = []
-                    filtered_metrics = []
-                    
-                    for i, (ax, ay, aw, ah) in enumerate(all_anomalies):
-                        overlaps = False
-                        
-                        # Check lens flare overlap
-                        for lf_box in lf_boxes:
-                            lf_x1, lf_y1, lf_x2, lf_y2 = lf_box
-                            if (ax < lf_x2 and ax + aw > lf_x1 and
-                                ay < lf_y2 and ay + ah > lf_y1):
-                                overlaps = True
-                                break
-                        
-                        # Check ISS overlap
-                        #if not overlaps:
-                          #  for iss_box in iss_boxes:
-                                #iss_x1, iss_y1, iss_x2, iss_y2 = iss_box
-                                #if (ax < iss_x2 and ax + aw > iss_x1 and
-                                #    ay < iss_y2 and ay + ah > iss_y1):
-                                #    overlaps = True
-                                #    break
-                        
-                        # Check panel overlap
-                        if not overlaps:
-                            for panel_box in panel_boxes:
-                                panel_x1, panel_y1, panel_x2, panel_y2 = panel_box
-                                if (ax < panel_x2 and ax + aw > panel_x1 and
-                                    ay < panel_y2 and ay + ah > panel_y1):
-                                    overlaps = True
-                                    break
-                        
-                        if not overlaps:
-                            filtered_anomalies.append(all_anomalies[i])
-                            if all_metrics:
-                                filtered_metrics.append(all_metrics[i])
-                    
-                    # Update anomalies and metrics after filtering
-                    all_anomalies = filtered_anomalies
-                    all_metrics = filtered_metrics
-                
                 # Update final results
                 results.anomalies = all_anomalies
                 results.metadata['anomaly_metrics'] = all_metrics
@@ -499,16 +533,13 @@ class SpaceObjectDetector:
 
     def cleanup(self):
         """Clean up resources."""
+        # Stop the worker thread
         self.rcnn_worker_running = False
-        # Signal the worker thread to exit
-        try:
-            self.rcnn_queue.put(None, timeout=1)
-        except Exception:
-            pass
         if hasattr(self, 'rcnn_worker_thread'):
-            self.rcnn_worker_thread.join()
+            self.rcnn_worker_thread.join(timeout=1.0)
+            
+        # Clear model
         self.model = None
-        torch.cuda.empty_cache()
 
     def initialize_model(self) -> bool:
         """Initialize the RCNN model."""
@@ -598,8 +629,9 @@ class SpaceObjectDetector:
 
     def set_rcnn_cycle(self, fps: int):
         """Update the RCNN detection cycle based on frame rate."""
-        self.rcnn_cycle = max(1, fps)  # Run RCNN once per second
-        print(f"RCNN cycle set to: {self.rcnn_cycle} frames")
+        # Get latest constants
+        import SOD_Constants as const
+        self.rcnn_cycle = const.RCNN_DETECTION_CYCLE  # Use dynamic constant
 
 class FastRCNNPredictor(torch.nn.Module):
     """Simple FastRCNN prediction head."""

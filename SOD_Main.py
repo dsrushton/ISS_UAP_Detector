@@ -7,8 +7,9 @@ import cv2
 import threading
 import time
 import os
-from typing import Optional
+from typing import Optional, List, Tuple
 import numpy as np
+import importlib
 
 from SOD_Constants import (
     MAX_CONSECUTIVE_ERRORS, 
@@ -23,6 +24,7 @@ from SOD_Constants import (
 from SOD_Utils import get_best_stream_url, crop_frame
 from SOD_Video import VideoManager
 from SOD_Logger import StatusLogger
+from SOD_Console import ParameterConsole
 
 class SpaceObjectDetectionSystem:
     """
@@ -44,6 +46,7 @@ class SpaceObjectDetectionSystem:
         self.display = DisplayManager()
         self.capture = CaptureManager()
         self.logger = StatusLogger()
+        self.console = None  # Will be initialized later
         
         # State tracking
         self.frame_count: int = 0
@@ -56,6 +59,9 @@ class SpaceObjectDetectionSystem:
         self.inject_test_frames = 0
         
         self.video = VideoManager()
+        
+        # Add combined frame buffer
+        self.combined_frame_buffer = None
         
     def initialize(self) -> bool:
         """
@@ -86,13 +92,22 @@ class SpaceObjectDetectionSystem:
             if not self.load_test_images():
                 print("Warning: Could not load test images")
             
+            # Launch parameter console in a separate thread
+            if self.console is None:
+                self.console = ParameterConsole()
+                # Start console in a separate thread
+                console_thread = threading.Thread(target=self.console.run)
+                console_thread.daemon = True  # Make thread daemon so it exits with main program
+                console_thread.start()
+                time.sleep(0.5)  # Give console time to initialize
+            
             return True
             
         except Exception as e:
             print(f"Error during initialization: {str(e)}")
             return False
 
-    def process_frame(self, frame: np.ndarray) -> Optional[bool]:
+    def process_frame(self, frame: np.ndarray, avoid_boxes: List[Tuple[int, int, int, int]] = None) -> Optional[bool]:
         """
         Process a single frame.
         
@@ -103,6 +118,9 @@ class SpaceObjectDetectionSystem:
         """
         try:
             iteration_start = time.time()
+            
+            # Get latest constants
+            import SOD_Constants as const
             
             # Handle test frame injection
             if self.inject_test_frames > 0:
@@ -115,9 +133,8 @@ class SpaceObjectDetectionSystem:
                 else:
                     self.inject_test_frames = 0
             
-            # Crop frame if needed
-            if frame.shape[1] != CROPPED_WIDTH:
-                frame = crop_frame(frame)
+            # Crop frame
+            frame = frame[:, const.get_value('CROP_LEFT'):-const.get_value('CROP_RIGHT')]  # Crop left and right sides
             
             # Run detection
             detection_start = time.time()
@@ -126,7 +143,6 @@ class SpaceObjectDetectionSystem:
             
             if detections is None:
                 self.logger.log_iteration(False, error_msg="Failed to process frame")
-                print("\nError processing frame - continuing to next frame")
                 return True
             
             # Update display
@@ -179,14 +195,18 @@ class SpaceObjectDetectionSystem:
             # Update recording if active
             if self.video.recording:
                 if debug_view is not None:
-                    # Combine frame and debug view for recording
+                    # Pre-allocate combined frame buffer if needed
                     h, w = frame.shape[:2]
                     debug_h, debug_w = debug_view.shape[:2]
-                    combined = np.zeros((max(h, debug_h), w + debug_w, 3), dtype=np.uint8)
-                    # Put debug view on left, main frame on right
-                    combined[:debug_h, :debug_w] = debug_view
-                    combined[:h, debug_w:] = annotated_frame
-                    self.video.update_recording(combined, detections.anomalies)
+                    if (self.combined_frame_buffer is None or 
+                        self.combined_frame_buffer.shape != (max(h, debug_h), w + debug_w, 3)):
+                        self.combined_frame_buffer = np.zeros((max(h, debug_h), w + debug_w, 3), dtype=np.uint8)
+                    
+                    # Reuse combined frame buffer
+                    self.combined_frame_buffer.fill(0)
+                    self.combined_frame_buffer[:debug_h, :debug_w] = debug_view
+                    self.combined_frame_buffer[:h, debug_w:] = annotated_frame
+                    self.video.update_recording(self.combined_frame_buffer, detections.anomalies)
                     
                     # Save new detection frame if anomaly detected and not skipped
                     if detections.anomalies and not detections.metadata.get('skip_save'):
@@ -204,12 +224,12 @@ class SpaceObjectDetectionSystem:
                 self.capture.save_raw_frame(frame)
                 self.burst_remaining -= 1
             
-            # Display frames
+            # Display frames and handle user input with minimal delay
             cv2.imshow('Main View', annotated_frame)
             if debug_view is not None:
                 cv2.imshow('Debug View', debug_view)
             
-            # Handle user input
+            # Use a 1ms timeout for key checks to minimize display latency
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 print("\nQuitting...")
@@ -238,7 +258,6 @@ class SpaceObjectDetectionSystem:
                 if not stream_url:
                     print("Failed to get stream URL")
                     return False
-                print(f"Got stream URL: {stream_url[:50]}...")
                 source = stream_url
             
             print("Initializing video capture...")
@@ -252,11 +271,9 @@ class SpaceObjectDetectionSystem:
             if fps <= 0:
                 print("Warning: Invalid frame rate detected, using default 30 fps")
                 fps = 30
-            else:
-                print(f"Detected frame rate: {fps:.2f} fps")
             
             # Update RCNN cycle and video parameters based on actual fps
-            self.detector.set_rcnn_cycle(int(fps))  # Run RCNN once per second
+            #self.detector.set_rcnn_cycle(int(fps))  # Run RCNN once per second
             self.video.set_fps(fps)  # Update video recording fps
                 
             print("Successfully connected to video source")
@@ -334,20 +351,40 @@ class SpaceObjectDetectionSystem:
         self.cleanup()
 
     def _cleanup(self):
-        """Clean up resources."""
-        if self.cap is not None:
+        """Clean up resources before reconnection attempt."""
+        # Stop video recording if active
+        if self.video.recording:
+            self.video.stop_recording()
+            
+        # Release video capture
+        if hasattr(self, 'cap'):
             self.cap.release()
-        if hasattr(self, 'video_writer') and self.video_writer is not None:
-            self.video_writer.release()
-        if hasattr(self, 'save_thread') and self.save_thread is not None:
-            self.save_thread.join()
+            delattr(self, 'cap')
 
     def cleanup(self) -> None:
-        """Clean up resources and perform any necessary shutdown tasks."""
+        """Final cleanup of all resources."""
         self.is_running = False
+        
+        # Stop the console
+        if self.console:
+            self.console.stop()
+            
+        # Stop the logger
+        if self.logger:
+            self.logger.stop()
+            
+        # Release video capture
+        if hasattr(self, 'cap'):
+            self.cap.release()
+            
+        # Clean up managers
         self.capture.cleanup()
+        self.video.cleanup()
         self.display.cleanup()
         self.detector.cleanup()
+        
+        # Destroy windows
+        cv2.destroyAllWindows()
 
     def run(self) -> None:
         """Main run loop with mode selection."""

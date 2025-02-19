@@ -60,7 +60,12 @@ class ThreadedVideoWriter:
     def write(self, frame: np.ndarray) -> bool:
         """Add a frame to the queue for writing."""
         try:
-            self.frame_queue.put(frame.copy(), timeout=1)
+            # Only copy if queue is not almost full
+            if self.frame_queue.qsize() < self.frame_queue.maxsize - 10:
+                self.frame_queue.put(frame, timeout=1)
+            else:
+                # If queue is almost full, skip frame to prevent stalling
+                print("Warning: Video write queue almost full, skipping frame")
             return True
         except queue.Full:
             print("Warning: Video write queue is full")
@@ -126,9 +131,11 @@ class VideoManager:
 
     def add_to_buffer(self, frame: np.ndarray, annotated_frame: np.ndarray, debug_view: Optional[np.ndarray]) -> None:
         """Add frame, annotated frame and debug view to buffers."""
-        self.frame_buffer.append(frame.copy())
-        self.annotated_buffer.append(annotated_frame.copy())
-        self.debug_buffer.append(debug_view.copy() if debug_view is not None else None)
+        # Only copy if we're actually going to use it for recording
+        if self.recording or len(self.frame_buffer) < self.frame_buffer.maxlen:
+            self.frame_buffer.append(frame)
+            self.annotated_buffer.append(annotated_frame)
+            self.debug_buffer.append(debug_view if debug_view is not None else None)
         
     def start_recording(self, frame_size: tuple, debug_view: Optional[np.ndarray] = None) -> bool:
         """Start recording video with buffer."""

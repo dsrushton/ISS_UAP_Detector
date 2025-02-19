@@ -23,6 +23,15 @@ class DisplayManager:
         self.last_save_time = 0
         self.logger = None
         
+        # Cache for shared computations
+        self.last_space_mask = None
+        self.last_space_contours = None
+        self.last_frame_shape = None
+        
+        # Pre-allocated buffers
+        self.debug_buffer = None
+        self.debug_mask_3ch = None
+        
         # Avoid box state
         self.avoid_boxes = []
         self.drawing_avoid_box = False
@@ -67,42 +76,80 @@ class DisplayManager:
                 self.current_avoid_box = None
                 self.avoid_start_pos = None
 
-    def create_debug_view(self, frame: np.ndarray, space_data: list) -> np.ndarray:
-        """Create debug visualization using the same structure as main view."""
-        if not DEBUG_VIEW_ENABLED or not space_data:
-            return np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8)
+    def _compute_space_mask_and_contours(self, frame_shape: tuple, boxes: list) -> tuple:
+        """Compute space mask and contours if needed or return cached version."""
+        if (self.last_space_mask is not None and 
+            self.last_frame_shape == frame_shape):
+            return self.last_space_mask, self.last_space_contours
             
-        # Create black background for debug view
-        debug_view = np.zeros_like(frame)
-        
-        # Get raw boxes from first entry
-        boxes, contours, anomalies, metadata = space_data[0]
-        
-        # Create a mask for all space regions
-        mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+        # Create a new mask for all space regions
+        mask = np.zeros(frame_shape[:2], dtype=np.uint8)
         
         # Fill all space boxes in the mask
         for box in boxes:
             x1, y1, x2, y2 = map(int, box)
             cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)  # Fill
-        
-        # Copy frame content for space regions
-        debug_view = np.where(mask[:, :, np.newaxis] == 255, frame, debug_view)
-        
+            
         # Find external contours of the combined regions
-        space_contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Draw only the external contours to create unified borders without internals
-        cv2.drawContours(debug_view, space_contours, -1, CLASS_COLORS['space'], 2)
+        # Cache results
+        self.last_space_mask = mask
+        self.last_space_contours = contours
+        self.last_frame_shape = frame_shape
+        
+        return mask, contours
+
+    def _clear_cached_computations(self):
+        """Clear cached computations when they should be recomputed."""
+        self.last_space_mask = None
+        self.last_space_contours = None
+        self.last_frame_shape = None
+
+    def _ensure_debug_buffers(self, shape: tuple):
+        """Ensure debug buffers are allocated with correct shape."""
+        if (self.debug_buffer is None or 
+            self.debug_buffer.shape != shape):
+            self.debug_buffer = np.zeros(shape, dtype=np.uint8)
+            self.debug_mask_3ch = np.zeros(shape, dtype=np.uint8)
+
+    def create_debug_view(self, frame: np.ndarray, space_data: list) -> np.ndarray:
+        """Create debug visualization using the same structure as main view."""
+        if not DEBUG_VIEW_ENABLED or not space_data:
+            return np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8)
+            
+        # Ensure buffers are allocated
+        self._ensure_debug_buffers(frame.shape)
+        
+        # Reset debug buffer
+        self.debug_buffer.fill(0)
+        
+        # Get raw boxes from first entry
+        boxes, contours, anomalies, metadata = space_data[0]
+        
+        # Use shared computation for space mask and contours
+        mask, space_contours = self._compute_space_mask_and_contours(frame.shape, boxes)
+        
+        # Convert mask to 3 channels for efficient copying
+        self.debug_mask_3ch[:] = 0
+        self.debug_mask_3ch[:, :, 0] = mask
+        self.debug_mask_3ch[:, :, 1] = mask
+        self.debug_mask_3ch[:, :, 2] = mask
+        
+        # Copy frame content for space regions (faster than np.where)
+        np.copyto(self.debug_buffer, frame, where=(self.debug_mask_3ch > 0))
+        
+        # Draw only the external contours
+        cv2.drawContours(self.debug_buffer, space_contours, -1, CLASS_COLORS['space'], 2)
         
         # Draw detection contours - now in absolute coordinates
         if contours is not None:
-            cv2.drawContours(debug_view, contours, -1, CONTOUR_COLOR, 1)
+            cv2.drawContours(self.debug_buffer, contours, -1, CONTOUR_COLOR, 1)
         
         # Draw anomaly boxes and metrics
         if anomalies is not None and metadata is not None and 'anomaly_metrics' in metadata:
             for anomaly_idx, (x, y, w, h) in enumerate(anomalies):
-                cv2.rectangle(debug_view, 
+                cv2.rectangle(self.debug_buffer, 
                             (x - 2, y - 2),
                             (x + w + 2, y + h + 2),
                             ANOMALY_BOX_COLOR, 2)
@@ -111,14 +158,17 @@ class DisplayManager:
                     metric = metadata['anomaly_metrics'][anomaly_idx]
                     if isinstance(metric, dict) and 'obj_brightness' in metric and 'contrast' in metric:
                         text = f"B:{metric['obj_brightness']:.1f} C:{metric['contrast']:.1f}"
-                        cv2.putText(debug_view, text, 
+                        cv2.putText(self.debug_buffer, text, 
                                   (x, y - 5),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, ANOMALY_BOX_COLOR, 1)
         
-        return debug_view
+        return self.debug_buffer
 
     def draw_detections(self, frame: np.ndarray, detections: DetectionResults) -> np.ndarray:
         """Draw detection boxes and labels on frame."""
+        # Clear cached computations at start of new frame
+        self._clear_cached_computations()
+        
         annotated_frame = frame.copy()
         
         # Handle special cases first
@@ -135,16 +185,13 @@ class DisplayManager:
                     color = CLASS_COLORS[class_name]
                     scores = detections.rcnn_scores[class_name]
                     
-                    # Create a mask for all space regions
-                    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+                    # Use shared computation for space mask and contours
+                    mask, contours = self._compute_space_mask_and_contours(frame.shape, boxes)
                     
-                    # Fill all space boxes in the mask
+                    # Draw labels for each box
                     for i, box in enumerate(boxes):
-                        x1, y1, x2, y2 = map(int, box)
-                        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)  # Fill
-                        
-                        # Draw labels for each box
                         if i < len(scores):  # Ensure we have a matching score
+                            x1, y1 = map(int, box[:2])
                             label_text = f"{class_name}: {scores[i]:.2f}"
                             font = cv2.FONT_HERSHEY_SIMPLEX
                             font_scale = 0.5
@@ -153,10 +200,7 @@ class DisplayManager:
                             text_x = x1 + 5
                             cv2.putText(annotated_frame, label_text, (text_x, text_y), font, font_scale, color, thickness)
                     
-                    # Find external contours of the combined regions
-                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    
-                    # Draw only the external contours to create unified borders without internals
+                    # Draw only the external contours
                     cv2.drawContours(annotated_frame, contours, -1, color, 2)
                 continue
                 
@@ -204,11 +248,12 @@ class DisplayManager:
                 )
         
         # Draw avoid boxes
-        for box in self.avoid_boxes:
-            x1, y1, x2, y2 = box
-            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), AVOID_BOX_COLOR, AVOID_BOX_THICKNESS)
-            cv2.putText(annotated_frame, "AVOID", (x1, y1 - 5), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, AVOID_BOX_COLOR, 1)
+        if self.avoid_boxes:
+            for box in self.avoid_boxes:
+                x1, y1, x2, y2 = box
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), AVOID_BOX_COLOR, AVOID_BOX_THICKNESS)
+                cv2.putText(annotated_frame, "AVOID", (x1, y1 - 5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, AVOID_BOX_COLOR, 1)
         
         # Draw current avoid box being drawn
         if self.drawing_avoid_box and self.current_avoid_box:
