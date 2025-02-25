@@ -10,6 +10,8 @@ from datetime import datetime
 import os
 from typing import Dict
 from collections import deque
+import psutil
+import torch
 
 class StatusLogger:
     """Handles threaded logging of system status."""
@@ -46,7 +48,20 @@ class StatusLogger:
             'debug_frame_copy': deque(maxlen=100),
             'debug_space_box': deque(maxlen=100),
             'debug_contours': deque(maxlen=100),
-            'debug_anomalies': deque(maxlen=100)
+            'debug_anomalies': deque(maxlen=100),
+            # Display granular timing
+            'display_prep': deque(maxlen=100),
+            'display_draw': deque(maxlen=100),
+            'display_show': deque(maxlen=100)
+        }
+        
+        # Memory tracking
+        self.memory_usage: Dict[str, deque] = {
+            'cpu_percent': deque(maxlen=100),
+            'ram_used': deque(maxlen=100),
+            'ram_percent': deque(maxlen=100),
+            'gpu_allocated': deque(maxlen=100),
+            'gpu_cached': deque(maxlen=100)
         }
         
         # Ensure logs directory exists
@@ -73,6 +88,19 @@ class StatusLogger:
         if operation in self.operation_times:
             self.operation_times[operation].append(duration)
             
+    def log_memory_usage(self):
+        """Log current memory usage."""
+        # CPU/RAM usage
+        process = psutil.Process(os.getpid())
+        self.memory_usage['cpu_percent'].append(process.cpu_percent())
+        self.memory_usage['ram_used'].append(process.memory_info().rss / 1024 / 1024)  # MB
+        self.memory_usage['ram_percent'].append(process.memory_percent())
+        
+        # GPU memory if available
+        if torch.cuda.is_available():
+            self.memory_usage['gpu_allocated'].append(torch.cuda.memory_allocated() / 1024 / 1024)  # MB
+            self.memory_usage['gpu_cached'].append(torch.cuda.memory_reserved() / 1024 / 1024)  # MB
+            
     def _calculate_stats(self, times: deque) -> tuple:
         """Calculate min, max, avg for a set of times."""
         if not times:
@@ -87,6 +115,9 @@ class StatusLogger:
         if not success:
             self.error_count += 1
             
+        # Log memory usage every iteration
+        self.log_memory_usage()
+            
         # Check if it's time to write a status update
         current_time = time.time()
         if current_time - self.last_log_time >= self.log_interval:
@@ -99,7 +130,8 @@ class StatusLogger:
                                 'video_buffer', 'video_recording', 'total_iteration'],
                 'RCNN Operations': ['rcnn_prep', 'rcnn_inference', 'rcnn_postprocess'],
                 'Detection Analysis': ['mask_creation', 'contour_finding', 'contour_analysis', 
-                                     'box_filtering', 'brightness_check']
+                                     'box_filtering', 'brightness_check'],
+                'Display Operations': ['display_prep', 'display_draw', 'display_show']
             }
             
             for group, operations in operation_groups.items():
@@ -115,13 +147,25 @@ class StatusLogger:
                 if group_stats:
                     perf_stats[group] = group_stats
             
+            # Calculate memory stats
+            memory_stats = {}
+            for metric, values in self.memory_usage.items():
+                if values:
+                    min_val, max_val, avg_val = self._calculate_stats(values)
+                    memory_stats[metric] = {
+                        'min': min_val,
+                        'max': max_val,
+                        'avg': avg_val
+                    }
+            
             self.log_queue.put({
                 'timestamp': datetime.now(),
                 'frames_processed': self.frame_count,
                 'detections': self.detection_count,
                 'errors': self.error_count,
                 'last_error': error_msg,
-                'performance': perf_stats
+                'performance': perf_stats,
+                'memory': memory_stats
             })
             self.last_log_time = current_time
             
@@ -142,10 +186,22 @@ class StatusLogger:
                     
                     # Write performance stats by group
                     if 'performance' in status:
+                        f.write("\nPerformance Metrics (ms):\n")
                         for group_name, group_stats in status['performance'].items():
                             f.write(f"\n{group_name}:\n")
                             for op, stats in group_stats.items():
                                 f.write(f"{op:15} min: {stats['min']:6.2f}  max: {stats['max']:6.2f}  avg: {stats['avg']:6.2f}\n")
+                    
+                    # Write memory stats
+                    if 'memory' in status:
+                        f.write("\nMemory Usage:\n")
+                        for metric, stats in status['memory'].items():
+                            if metric.startswith('gpu'):
+                                f.write(f"{metric:15} min: {stats['min']:6.1f}MB  max: {stats['max']:6.1f}MB  avg: {stats['avg']:6.1f}MB\n")
+                            elif metric.endswith('percent'):
+                                f.write(f"{metric:15} min: {stats['min']:6.1f}%   max: {stats['max']:6.1f}%   avg: {stats['avg']:6.1f}%\n")
+                            else:
+                                f.write(f"{metric:15} min: {stats['min']:6.1f}MB  max: {stats['max']:6.1f}MB  avg: {stats['avg']:6.1f}MB\n")
                     
                     f.write("----------------------------------------\n")
             except queue.Empty:

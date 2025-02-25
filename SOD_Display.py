@@ -122,6 +122,7 @@ class DisplayManager:
         self._ensure_debug_buffers(frame.shape)
         
         # Reset debug buffer
+        copy_start = time.time()
         self.debug_buffer.fill(0)
         
         # Get raw boxes from first entry
@@ -138,14 +139,20 @@ class DisplayManager:
         
         # Copy frame content for space regions (faster than np.where)
         np.copyto(self.debug_buffer, frame, where=(self.debug_mask_3ch > 0))
+        self.logger.log_operation_time('debug_frame_copy', time.time() - copy_start)
         
+        space_start = time.time()
         # Draw only the external contours
         cv2.drawContours(self.debug_buffer, space_contours, -1, CLASS_COLORS['space'], 2)
+        self.logger.log_operation_time('debug_space_box', time.time() - space_start)
         
+        contour_start = time.time()
         # Draw detection contours - now in absolute coordinates
         if contours is not None:
             cv2.drawContours(self.debug_buffer, contours, -1, CONTOUR_COLOR, 1)
+        self.logger.log_operation_time('debug_contours', time.time() - contour_start)
         
+        anomaly_start = time.time()
         # Draw anomaly boxes and metrics
         if anomalies is not None and metadata is not None and 'anomaly_metrics' in metadata:
             for anomaly_idx, (x, y, w, h) in enumerate(anomalies):
@@ -161,6 +168,7 @@ class DisplayManager:
                         cv2.putText(self.debug_buffer, text, 
                                   (x, y - 5),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, ANOMALY_BOX_COLOR, 1)
+        self.logger.log_operation_time('debug_anomalies', time.time() - anomaly_start)
         
         return self.debug_buffer
 
@@ -169,7 +177,9 @@ class DisplayManager:
         # Clear cached computations at start of new frame
         self._clear_cached_computations()
         
+        prep_start = time.time()
         annotated_frame = frame.copy()
+        self.logger.log_operation_time('display_prep', time.time() - prep_start)
         
         # Handle special cases first
         if detections.darkness_detected:
@@ -177,6 +187,7 @@ class DisplayManager:
         elif 'nofeed' in detections.rcnn_boxes:
             return self.draw_nofeed_overlay(annotated_frame)
         
+        draw_start = time.time()
         # Draw RCNN detections
         for class_name, boxes in detections.rcnn_boxes.items():
             # Handle space boxes separately
@@ -260,6 +271,7 @@ class DisplayManager:
             x, y, w, h = self.current_avoid_box
             cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), AVOID_BOX_COLOR, AVOID_BOX_THICKNESS)
         
+        self.logger.log_operation_time('display_draw', time.time() - draw_start)
         return annotated_frame
 
     def draw_darkness_overlay(self, frame: np.ndarray, darkness_ratio: float = 0) -> np.ndarray:

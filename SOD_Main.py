@@ -18,6 +18,8 @@ from SOD_Constants import (
     TEST_IMAGE_PATH,
     RECONNECT_DELAY,
     VIDEO_SAVE_DIR,
+    JPG_SAVE_DIR,
+    RAW_SUBDIR,
     #VIDEO_FPS,
     BUFFER_SECONDS
 )
@@ -60,8 +62,13 @@ class SpaceObjectDetectionSystem:
         
         self.video = VideoManager()
         
-        # Add combined frame buffer
+        # Add combined frame buffer - initialize as None, will be created when needed
         self.combined_frame_buffer = None
+        
+        # Ensure required directories exist
+        os.makedirs(VIDEO_SAVE_DIR, exist_ok=True)
+        os.makedirs(JPG_SAVE_DIR, exist_ok=True)
+        os.makedirs(os.path.join(JPG_SAVE_DIR, RAW_SUBDIR), exist_ok=True)
         
     def initialize(self) -> bool:
         """
@@ -136,6 +143,11 @@ class SpaceObjectDetectionSystem:
             # Crop frame
             frame = frame[:, const.get_value('CROP_LEFT'):-const.get_value('CROP_RIGHT')]  # Crop left and right sides
             
+            # Add raw frame to buffer immediately - this ensures we have pre-detection context
+            buffer_start = time.time()
+            self.video.add_to_buffer(frame)  # Add raw frame first, we'll update with annotations later
+            self.logger.log_operation_time('video_buffer', time.time() - buffer_start)
+            
             # Run detection
             detection_start = time.time()
             detections = self.detector.process_frame(frame, self.display.avoid_boxes)
@@ -174,17 +186,23 @@ class SpaceObjectDetectionSystem:
             elif 'nofeed' in detections.rcnn_boxes:
                 debug_view = self.display.draw_nofeed_overlay(np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8))
             
-            # Add to video buffer
-            buffer_start = time.time()
-            self.video.add_to_buffer(frame, annotated_frame, debug_view)
-            self.logger.log_operation_time('video_buffer', time.time() - buffer_start)
+            # Update buffer with annotated frame and debug view
+            buffer_update_start = time.time()
+            self.video.update_buffer_annotations(annotated_frame, debug_view)
+            self.logger.log_operation_time('video_buffer', time.time() - buffer_update_start)
             
             # Handle video recording
             recording_start = time.time()
             if detections.anomalies and not self.video.recording and not detections.metadata.get('skip_save'):
+                # Calculate the combined frame size for recording
+                debug_width = debug_view.shape[1] if debug_view is not None else 0
+                frame_width = frame.shape[1]
+                frame_height = frame.shape[0]
+                debug_height = debug_view.shape[0] if debug_view is not None else 0
+                
                 # Start new recording with combined frame size
-                frame_size = (frame.shape[1] + (debug_view.shape[1] if debug_view is not None else 0),
-                             max(frame.shape[0], debug_view.shape[0] if debug_view is not None else 0))
+                frame_size = (frame_width + debug_width, max(frame_height, debug_height))
+                
                 if self.video.start_recording(frame_size, debug_view):
                     print(f"\nStarted recording: {self.video.current_video_number:05d}.avi")
                     # Start tracking this video number for JPGs
@@ -195,18 +213,15 @@ class SpaceObjectDetectionSystem:
             # Update recording if active
             if self.video.recording:
                 if debug_view is not None:
-                    # Pre-allocate combined frame buffer if needed
-                    h, w = frame.shape[:2]
-                    debug_h, debug_w = debug_view.shape[:2]
-                    if (self.combined_frame_buffer is None or 
-                        self.combined_frame_buffer.shape != (max(h, debug_h), w + debug_w, 3)):
-                        self.combined_frame_buffer = np.zeros((max(h, debug_h), w + debug_w, 3), dtype=np.uint8)
+                    # Use the helper method to create combined frame
+                    combined_frame = self.video.create_combined_frame(
+                        annotated_frame, debug_view, self.combined_frame_buffer)
                     
-                    # Reuse combined frame buffer
-                    self.combined_frame_buffer.fill(0)
-                    self.combined_frame_buffer[:debug_h, :debug_w] = debug_view
-                    self.combined_frame_buffer[:h, debug_w:] = annotated_frame
-                    self.video.update_recording(self.combined_frame_buffer, detections.anomalies)
+                    # Update our reference to the buffer
+                    self.combined_frame_buffer = combined_frame
+                    
+                    # Update recording with combined frame
+                    self.video.update_recording(combined_frame, detections.anomalies)
                     
                     # Save new detection frame if anomaly detected and not skipped
                     if detections.anomalies and not detections.metadata.get('skip_save'):
@@ -225,9 +240,11 @@ class SpaceObjectDetectionSystem:
                 self.burst_remaining -= 1
             
             # Display frames and handle user input with minimal delay
+            display_show_start = time.time()
             cv2.imshow('Main View', annotated_frame)
             if debug_view is not None:
                 cv2.imshow('Debug View', debug_view)
+            self.logger.log_operation_time('display_show', time.time() - display_show_start)
             
             # Use a 1ms timeout for key checks to minimize display latency
             key = cv2.waitKey(1) & 0xFF
@@ -261,7 +278,9 @@ class SpaceObjectDetectionSystem:
                 source = stream_url
             
             print("Initializing video capture...")
-            self.cap = cv2.VideoCapture(source)
+            # Set FFmpeg log level to error only
+            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'loglevel;error'
+            self.cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
             if not self.cap.isOpened():
                 print("Failed to open video capture")
                 return False
@@ -418,7 +437,25 @@ class SpaceObjectDetectionSystem:
     def process_live_feed(self) -> None:
         """Process live video feed."""
         try:
+            # Initialize video capture
             cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                print("Error: Could not open camera")
+                return
+                
+            # Get actual frame rate from capture
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if fps <= 0:
+                print("Warning: Invalid frame rate detected, using default 30 fps")
+                fps = 30
+                
+            # Update video parameters based on actual fps
+            self.video.set_fps(fps)
+            
+            print(f"Camera initialized with {fps} FPS")
+            
+            # Pre-allocate combined frame buffer
+            combined_buffer = None
             
             while True:
                 ret, frame = cap.read()
@@ -437,15 +474,57 @@ class SpaceObjectDetectionSystem:
                 # Update display
                 annotated_frame = self.display.draw_detections(frame, predictions)
                 
+                # Create debug view if needed
+                debug_view = None
+                if 'space' in predictions.rcnn_boxes:
+                    space_data = []
+                    space_data.append((
+                        predictions.rcnn_boxes['space'],
+                        predictions.contours,
+                        predictions.anomalies,
+                        predictions.metadata
+                    ))
+                    debug_view = self.display.create_debug_view(frame, space_data)
+                
+                # Update buffer with annotated frame
+                self.video.update_buffer_annotations(annotated_frame, debug_view)
+                
                 # Handle recording based on detections
                 has_detection = bool(predictions.anomalies)
-                if has_detection and not self.video.is_recording:
-                    self.video.start_recording(frame)
-                elif self.video.is_recording:
-                    self.video.update_recording(frame, has_detection)
+                if has_detection and not self.video.recording:
+                    # Calculate frame size for recording
+                    debug_width = debug_view.shape[1] if debug_view is not None else 0
+                    frame_width = frame.shape[1]
+                    frame_height = frame.shape[0]
+                    debug_height = debug_view.shape[0] if debug_view is not None else 0
+                    
+                    # Start new recording with combined frame size
+                    frame_size = (frame_width + debug_width, max(frame_height, debug_height))
+                    self.video.start_recording(frame_size, debug_view)
+                    print(f"\nStarted recording: {self.video.current_video_number:05d}.avi")
+                    
+                    # Save first detection frame
+                    self.capture.start_new_video(self.video.current_video_number)
+                    self.capture.save_detection(annotated_frame, debug_view, check_interval=False)
+                    
+                elif self.video.recording:
+                    # Create combined frame for recording if needed
+                    if debug_view is not None:
+                        # Use the helper method to create combined frame
+                        combined_buffer = self.video.create_combined_frame(
+                            annotated_frame, debug_view, combined_buffer)
+                        self.video.update_recording(combined_buffer, has_detection)
+                    else:
+                        self.video.update_recording(annotated_frame, has_detection)
+                    
+                    # Save detection frame if needed
+                    if has_detection:
+                        self.capture.save_detection(annotated_frame, debug_view)
                 
                 # Show frame
                 cv2.imshow('Live Feed', annotated_frame)
+                if debug_view is not None:
+                    cv2.imshow('Debug View', debug_view)
                 
                 # Handle user input
                 key = cv2.waitKey(1) & 0xFF
@@ -455,7 +534,8 @@ class SpaceObjectDetectionSystem:
         except Exception as e:
             print(f"Error processing live feed: {e}")
         finally:
-            cap.release()
+            if 'cap' in locals() and cap is not None:
+                cap.release()
             cv2.destroyAllWindows()
 
     def load_test_images(self) -> bool:
@@ -505,7 +585,7 @@ def main():
         print("Videos include 3s pre-detection buffer")
         
         # YouTube ISS live stream URL
-        youtube_url = 'https://www.youtube.com/watch?v=OCem0E-0Q6Y'
+        youtube_url = 'https://www.youtube.com/watch?v=4zXSrtbqYjI'
         
         print("\nConnecting to ISS live feed...")
         sod.process_video_stream(youtube_url, is_youtube=True)

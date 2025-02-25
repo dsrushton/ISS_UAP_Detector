@@ -136,24 +136,28 @@ class SpaceObjectDetector:
             blur_size = const.get_value('GAUSSIAN_BLUR_SIZE')
             blurred = cv2.GaussianBlur(roi_max, (blur_size, blur_size), 0)
             
-            # Create binary mask for dark background
+            # Create binary mask for dark background - ensure same dimensions as space_mask
             _, dark_mask = cv2.threshold(blurred, const.get_value('MAX_BG_BRIGHTNESS'), 255, cv2.THRESH_BINARY_INV)
+            
+            # Ensure dark_mask has the same dimensions as space_mask
+            if dark_mask.shape != space_mask.shape:
+                print(f"Mask dimension mismatch: dark_mask {dark_mask.shape} vs space_mask {space_mask.shape}")
+                # Resize dark_mask to match space_mask
+                dark_mask = cv2.resize(dark_mask, (space_mask.shape[1], space_mask.shape[0]))
+            
+            # Now perform the bitwise operation with masks of the same size
             dark_mask = cv2.bitwise_and(dark_mask, space_mask)  # Limit to space region
             
-            # # Check if dark area has any 100x100 region that's completely dark
-            # dark_region_size = const.get_value('MIN_DARK_REGION_SIZE')
-            # kernel = np.ones((dark_region_size, dark_region_size), np.uint8)
-            # valid_region_mask = cv2.erode(dark_mask, kernel, iterations=1)
-            
-            # valid_dark_region = cv2.countNonZero(valid_region_mask) > 0
-            
-            # if not valid_dark_region:
-            #     # Return empty results if no valid dark region found
-            #     results.metadata['reason'] = 'no_valid_dark_region'
-            #     return results
-            
-            # Create binary mask for bright objects
+            # Create binary mask for bright objects - ensure same dimensions as space_mask
             _, bright_mask = cv2.threshold(blurred, const.get_value('MIN_OBJECT_BRIGHTNESS'), 255, cv2.THRESH_BINARY)
+            
+            # Ensure bright_mask has the same dimensions as space_mask
+            if bright_mask.shape != space_mask.shape:
+                print(f"Mask dimension mismatch: bright_mask {bright_mask.shape} vs space_mask {space_mask.shape}")
+                # Resize bright_mask to match space_mask
+                bright_mask = cv2.resize(bright_mask, (space_mask.shape[1], space_mask.shape[0]))
+            
+            # Now perform the bitwise operation with masks of the same size
             bright_mask = cv2.bitwise_and(bright_mask, space_mask)  # Limit to space region
             
             # Combine masks to get regions where bright objects meet dark background
@@ -162,7 +166,7 @@ class SpaceObjectDetector:
             bright_mask = cv2.dilate(bright_mask, kernel, iterations=1)
             dark_mask = cv2.dilate(dark_mask, kernel, iterations=1)
             
-            # Get intersection of dilated masks
+            # Get intersection of dilated masks - ensure all masks have the same dimensions
             edge_mask = cv2.bitwise_and(bright_mask, dark_mask)
             edge_mask = cv2.bitwise_and(edge_mask, space_mask)  # Ensure we stay within space region
             
@@ -202,8 +206,15 @@ class SpaceObjectDetector:
                 if valid_detections >= max_valid:
                     break
                 
-                # Get contour properties
+                # Get contour properties - do this first for ultra-fast rejection
                 x, y, w, h = cv2.boundingRect(contour)
+                
+                # Ultra-fast size check before any other processing
+                min_dim = const.get_value('MIN_CONTOUR_DIMENSION')
+                max_width = const.get_value('MAX_CONTOUR_WIDTH')
+                max_height = const.get_value('MAX_CONTOUR_HEIGHT')
+                if (w < min_dim or h < min_dim or w > max_width or h > max_height):
+                    continue
                 
                 # Convert to global coordinates for filtering
                 abs_x = x + x1
@@ -236,7 +247,8 @@ class SpaceObjectDetector:
                 if not is_valid:
                     continue
                 
-                # Skip if contrast is too low or negative
+                # Skip if contrast is too low or negative - this check is now redundant as it's in analyze_object
+                # but keeping it for backward compatibility
                 if metrics['contrast'] < min_contrast:
                     continue
                 
@@ -302,6 +314,15 @@ class SpaceObjectDetector:
             # Get latest constants
             import SOD_Constants as const
             
+            # ULTRA-FAST SIZE REJECTION - Check dimensions first before any other operations
+            # These are the most common rejection criteria and fastest to check
+            min_dim = const.get_value('MIN_CONTOUR_DIMENSION')
+            max_width = const.get_value('MAX_CONTOUR_WIDTH')
+            max_height = const.get_value('MAX_CONTOUR_HEIGHT')
+            
+            if (w < min_dim or h < min_dim or w > max_width or h > max_height):
+                return False, {'width': w, 'height': h}
+            
             # Use provided contour if available, otherwise find it
             if contour is None:
                 contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -309,71 +330,75 @@ class SpaceObjectDetector:
                     return False, {}
                 contour = max(contours, key=cv2.contourArea)
             
-            x, y, w, h = cv2.boundingRect(contour)
+            # Calculate area and aspect ratio - still relatively fast operations
+            area = cv2.contourArea(contour)
+            aspect_ratio = float(w)/h if h != 0 else 0
             
+            # Create basic metrics dict with just the fast calculations
             metrics = {
-                'area': cv2.contourArea(contour),
-                'aspect_ratio': float(w)/h if h != 0 else 0,
+                'area': area,
+                'aspect_ratio': aspect_ratio,
                 'width': w,
                 'height': h
             }
             
-            # Get size requirements
-            min_dim = const.get_value('MIN_CONTOUR_DIMENSION')
-            max_width = const.get_value('MAX_CONTOUR_WIDTH')
-            max_height = const.get_value('MAX_CONTOUR_HEIGHT')
+            # SECOND LEVEL REJECTION - Area and aspect ratio
             min_area = const.get_value('MIN_CONTOUR_AREA')
             max_ratio = const.get_value('MAX_ASPECT_RATIO')
             
-            # STRICT SIZE REQUIREMENTS FIRST
-            if (w < min_dim or h < min_dim or
-                w > max_width or h > max_height):
+            if area < min_area:
                 return False, metrics
             
-            if metrics['area'] < min_area:
+            if aspect_ratio > max_ratio or aspect_ratio < (1/max_ratio):
                 return False, metrics
             
-            if metrics['aspect_ratio'] > max_ratio or metrics['aspect_ratio'] < (1/max_ratio):
-                return False, metrics
+            # THIRD LEVEL - More expensive operations only if we passed the quick checks
             
-            # Create precise masks for object and background
-            mask = np.zeros(binary_mask.shape, dtype=np.uint8)
-            cv2.drawContours(mask, [contour], -1, 255, -1)
+            # Use the original binary mask instead of creating a new one
+            # This ensures the mask dimensions match the frame dimensions
+            mask = binary_mask.copy()
             
-            # Create dilated ring around object for background measurement
-            morph_size = const.get_value('MORPH_KERNEL_SIZE')
-            kernel = np.ones((morph_size, morph_size), np.uint8)
-            bg_mask = cv2.dilate(mask, kernel, iterations=2)
-            bg_mask = cv2.bitwise_xor(bg_mask, mask)  # Creates ring around object
-            
-            # Convert frame to max RGB if not already grayscale
+            # Convert frame to max RGB if not already grayscale - do this before creating bg_mask
             if len(frame.shape) == 3:
                 frame_max = np.max(frame, axis=2)  # Use max RGB value
             else:
                 frame_max = frame
             
-            # Get precise brightness measurements
+            # Get object brightness first - this is faster than creating the bg_mask
             obj_brightness = cv2.mean(frame_max, mask=mask)[0]
+            
+            # FOURTH LEVEL REJECTION - Object brightness check before creating bg_mask
+            min_obj_bright = const.get_value('MIN_OBJECT_BRIGHTNESS')
+            max_obj_bright = const.get_value('MAX_OBJECT_BRIGHTNESS')
+            
+            if not (min_obj_bright < obj_brightness < max_obj_bright):
+                metrics['obj_brightness'] = obj_brightness
+                return False, metrics
+            
+            # Now create the background mask for contrast check
+            morph_size = const.get_value('MORPH_KERNEL_SIZE')
+            kernel = np.ones((morph_size, morph_size), np.uint8)
+            bg_mask = cv2.dilate(mask, kernel, iterations=2)
+            bg_mask = cv2.bitwise_xor(bg_mask, mask)  # Creates ring around object
+            
+            # Get background brightness
             bg_brightness = cv2.mean(frame_max, mask=bg_mask)[0]
             contrast = obj_brightness - bg_brightness
             
+            # Update metrics with brightness values
             metrics.update({
                 'obj_brightness': obj_brightness,
                 'bg_brightness': bg_brightness,
                 'contrast': contrast
             })
             
-            # Get brightness thresholds
-            min_obj_bright = const.get_value('MIN_OBJECT_BRIGHTNESS')
-            max_obj_bright = const.get_value('MAX_OBJECT_BRIGHTNESS')
+            # FINAL CHECKS - Background brightness and contrast
             max_bg_bright = const.get_value('MAX_BG_BRIGHTNESS')
             min_contrast = const.get_value('MIN_CONTRAST')
             
-            # Brightness checks
-            if not (min_obj_bright < obj_brightness < max_obj_bright):
-                return False, metrics
             if bg_brightness > max_bg_bright:
                 return False, metrics
+                
             if contrast < min_contrast:
                 return False, metrics
             
@@ -574,16 +599,25 @@ class SpaceObjectDetector:
         """Run RCNN detection on a frame."""
         start = time.time()
         
+        # Log initial memory state
+        self.logger.log_memory_usage()
+        
         # Convert BGR numpy array directly to tensor (HWC -> CHW)
         img_tensor = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
         img_tensor = self.transform(img_tensor).unsqueeze(0).to(DEVICE)
         self.logger.log_operation_time('rcnn_prep', time.time() - start)
+        
+        # Log memory after tensor creation
+        self.logger.log_memory_usage()
         
         # Run detection
         inference_start = time.time()
         with torch.no_grad():
             predictions = self.model(img_tensor)[0]
         self.logger.log_operation_time('rcnn_inference', time.time() - inference_start)
+        
+        # Log memory after inference
+        self.logger.log_memory_usage()
         
         # Process predictions
         postprocess_start = time.time()
@@ -607,6 +641,16 @@ class SpaceObjectDetector:
                 results['scores'][class_name].append(score)
         
         self.logger.log_operation_time('rcnn_postprocess', time.time() - postprocess_start)
+        
+        # Clean up GPU memory
+        del img_tensor
+        del predictions
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # Log final memory state
+        self.logger.log_memory_usage()
+        
         return results
 
     def _rcnn_worker(self):
@@ -626,6 +670,10 @@ class SpaceObjectDetector:
             self.last_rcnn_results = predictions
             self.last_rcnn_frame = self.frame_count
             self.rcnn_queue.task_done()
+            
+            # Clean up GPU memory after each batch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def set_rcnn_cycle(self, fps: int):
         """Update the RCNN detection cycle based on frame rate."""

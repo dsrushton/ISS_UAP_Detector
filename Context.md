@@ -206,11 +206,12 @@ Fixed Issues:
 1. Adjusted RCNN cycle to match framerate (54 frames)
 2. Balanced detection parameters for accuracy vs. speed
 3. Optimized video buffer operations
+4. Threaded RCNN
+5. Added 100x100 sliding window filter
 
 ## Current Status:
 Continuing to refine detection algorithms for best captures
 Hunting down bugs and inefficiency
-A realtime parameter dashboard is a mdeium-term priority. 
 
 
 ### Performance Metrics
@@ -222,9 +223,13 @@ A realtime parameter dashboard is a mdeium-term priority.
 
 Three things to be built out for deployment:
 1. Near perfect capture, almost there. 
-2. Better error handling, can't crash.
+2. Better error handling, can't crash. - done
 3. Real-time parameter dashboard.
-4. Multiple space window display.
+4. Multiple space window display. - done
 5. Livestream - seem like a simple process
 6. 
 5. 
+
+Recent Additions:
+1. Real-time Console for in-program Constants altereation.
+2. Enhanced Logging.
