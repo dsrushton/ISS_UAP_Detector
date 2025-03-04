@@ -11,7 +11,7 @@ import time
 from SOD_Constants import (
     CLASS_COLORS, CLASS_NAMES, CROPPED_WIDTH,
     DEBUG_VIEW_ENABLED, CONTOUR_COLOR, ANOMALY_BOX_COLOR,
-    AVOID_BOX_COLOR, AVOID_BOX_THICKNESS
+    AVOID_BOX_COLOR, AVOID_BOX_THICKNESS, GAUSSIAN_BLUR_SIZE
 )
 from SOD_Detections import DetectionResults
 
@@ -22,6 +22,7 @@ class DisplayManager:
         self.debug_view = None
         self.last_save_time = 0
         self.logger = None
+        self.is_streaming = False
         
         # Cache for shared computations
         self.last_space_mask = None
@@ -41,10 +42,23 @@ class DisplayManager:
         # Set up mouse callback
         cv2.namedWindow('Main View')
         cv2.setMouseCallback('Main View', self._mouse_callback)
+        self._update_window_title()
     
     def set_logger(self, logger):
         """Set the logger instance."""
         self.logger = logger
+
+    def set_streaming(self, is_streaming: bool) -> None:
+        """Set streaming state and update window title."""
+        self.is_streaming = is_streaming
+        self._update_window_title()
+
+    def _update_window_title(self) -> None:
+        """Update the window title with streaming status."""
+        title = "Main View"
+        if self.is_streaming:
+            title = "🔴 STREAMING - " + title
+        cv2.setWindowTitle('Main View', title)
 
     def _mouse_callback(self, event, x, y, flags, param):
         """Handle mouse events for avoid box drawing."""
@@ -76,29 +90,23 @@ class DisplayManager:
                 self.current_avoid_box = None
                 self.avoid_start_pos = None
 
-    def _compute_space_mask_and_contours(self, frame_shape: tuple, boxes: list) -> tuple:
-        """Compute space mask and contours if needed or return cached version."""
-        if (self.last_space_mask is not None and 
-            self.last_frame_shape == frame_shape):
-            return self.last_space_mask, self.last_space_contours
-            
-        # Create a new mask for all space regions
-        mask = np.zeros(frame_shape[:2], dtype=np.uint8)
+    def _compute_space_mask_and_contours(self, boxes: list, frame: np.ndarray) -> tuple:
+        """Compute space mask and contours for visualization."""
+        # Create a mask for all space regions
+        h, w = frame.shape[:2]
+        space_mask = np.zeros((h, w), dtype=np.uint8)
         
-        # Fill all space boxes in the mask
+        # Draw all space boxes on the mask
         for box in boxes:
-            x1, y1, x2, y2 = map(int, box)
-            cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)  # Fill
-            
-        # Find external contours of the combined regions
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            x1, y1, x2, y2 = box
+            cv2.rectangle(space_mask, (x1, y1), (x2, y2), 255, -1)
         
-        # Cache results
-        self.last_space_mask = mask
-        self.last_space_contours = contours
-        self.last_frame_shape = frame_shape
+        # Find contours of space regions
+        space_contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        return mask, contours
+        # Return mask and contours directly without computing dark mask
+        # This improves performance by skipping unnecessary processing
+        return space_mask, space_contours
 
     def _clear_cached_computations(self):
         """Clear cached computations when they should be recomputed."""
@@ -106,12 +114,16 @@ class DisplayManager:
         self.last_space_contours = None
         self.last_frame_shape = None
 
-    def _ensure_debug_buffers(self, shape: tuple):
-        """Ensure debug buffers are allocated with correct shape."""
+    def _ensure_debug_buffers(self, frame_shape: tuple):
+        """Ensure debug buffers are allocated with correct dimensions."""
+        h, w = frame_shape[:2]
+        
         if (self.debug_buffer is None or 
-            self.debug_buffer.shape != shape):
-            self.debug_buffer = np.zeros(shape, dtype=np.uint8)
-            self.debug_mask_3ch = np.zeros(shape, dtype=np.uint8)
+            self.debug_buffer.shape[0] != h or 
+            self.debug_buffer.shape[1] != w):
+            self.debug_buffer = np.zeros((h, w, 3), dtype=np.uint8)
+            self.debug_mask_3ch = np.zeros((h, w, 3), dtype=np.uint8)
+            print(f"Debug buffers allocated with shape {self.debug_buffer.shape}")
 
     def create_debug_view(self, frame: np.ndarray, space_data: list) -> np.ndarray:
         """Create debug visualization using the same structure as main view."""
@@ -128,34 +140,38 @@ class DisplayManager:
         # Get raw boxes from first entry
         boxes, contours, anomalies, metadata = space_data[0]
         
-        # Use shared computation for space mask and contours
-        mask, space_contours = self._compute_space_mask_and_contours(frame.shape, boxes)
+        # Use shared computation for space mask and contours, passing the frame
+        space_mask, space_contours = self._compute_space_mask_and_contours(boxes, frame)
         
-        # Convert mask to 3 channels for efficient copying
-        self.debug_mask_3ch[:] = 0
-        self.debug_mask_3ch[:, :, 0] = mask
-        self.debug_mask_3ch[:, :, 1] = mask
-        self.debug_mask_3ch[:, :, 2] = mask
+        # Create 3-channel mask for copying
+        self.debug_mask_3ch = cv2.merge([space_mask, space_mask, space_mask])
         
         # Copy frame content for space regions (faster than np.where)
         np.copyto(self.debug_buffer, frame, where=(self.debug_mask_3ch > 0))
         self.logger.log_operation_time('debug_frame_copy', time.time() - copy_start)
         
         space_start = time.time()
-        # Draw only the external contours
-        cv2.drawContours(self.debug_buffer, space_contours, -1, CLASS_COLORS['space'], 2)
+        # Draw only the external space contours in blue
+        for i, contour in enumerate(space_contours):
+            if i < len(boxes):  # Only draw external space contours
+                color = CLASS_COLORS['space']  # Blue for space
+                cv2.drawContours(self.debug_buffer, [contour], -1, color, 2)
+        
+        # Remove the dark mask overlay to improve performance
         self.logger.log_operation_time('debug_space_box', time.time() - space_start)
         
-        contour_start = time.time()
-        # Draw detection contours - now in absolute coordinates
+        anomaly_start = time.time()
+        # Draw detection contours - these are already in absolute coordinates
         if contours is not None:
+            # Draw each contour directly - they're already in global coordinates
             cv2.drawContours(self.debug_buffer, contours, -1, CONTOUR_COLOR, 1)
-        self.logger.log_operation_time('debug_contours', time.time() - contour_start)
+        self.logger.log_operation_time('debug_contours', time.time() - anomaly_start)
         
         anomaly_start = time.time()
         # Draw anomaly boxes and metrics
         if anomalies is not None and metadata is not None and 'anomaly_metrics' in metadata:
             for anomaly_idx, (x, y, w, h) in enumerate(anomalies):
+                # Draw rectangle with a small padding
                 cv2.rectangle(self.debug_buffer, 
                             (x - 2, y - 2),
                             (x + w + 2, y + h + 2),
@@ -177,9 +193,8 @@ class DisplayManager:
         # Clear cached computations at start of new frame
         self._clear_cached_computations()
         
-        prep_start = time.time()
+        # Create a copy of the frame for annotations
         annotated_frame = frame.copy()
-        self.logger.log_operation_time('display_prep', time.time() - prep_start)
         
         # Handle special cases first
         if detections.darkness_detected:
@@ -196,8 +211,8 @@ class DisplayManager:
                     color = CLASS_COLORS[class_name]
                     scores = detections.rcnn_scores[class_name]
                     
-                    # Use shared computation for space mask and contours
-                    mask, contours = self._compute_space_mask_and_contours(frame.shape, boxes)
+                    # Use shared computation for space mask and contours, passing the frame
+                    mask, contours = self._compute_space_mask_and_contours(boxes, frame)
                     
                     # Draw labels for each box
                     for i, box in enumerate(boxes):
@@ -211,8 +226,11 @@ class DisplayManager:
                             text_x = x1 + 5
                             cv2.putText(annotated_frame, label_text, (text_x, text_y), font, font_scale, color, thickness)
                     
-                    # Draw only the external contours
-                    cv2.drawContours(annotated_frame, contours, -1, color, 2)
+                    # Draw only the external space contours (blue)
+                    # The first len(boxes) contours are the external space contours
+                    for i, contour in enumerate(contours):
+                        if i < len(boxes):  # Only draw external space contours
+                            cv2.drawContours(annotated_frame, [contour], -1, color, 2)
                 continue
                 
             scores = detections.rcnn_scores[class_name]

@@ -16,11 +16,13 @@ import torch
 class StatusLogger:
     """Handles threaded logging of system status."""
     
-    def __init__(self, log_interval: int = 300):  # Log status every 5 minutes by default
+    def __init__(self, first_log_interval: int = 60, subsequent_log_interval: int = 300):  # First log at 1 minute, then every 5 minutes
         self.log_queue = queue.Queue()
         self.is_running = False
         self.thread = None
-        self.log_interval = log_interval
+        self.first_log_interval = first_log_interval  # 1 minute for first log
+        self.subsequent_log_interval = subsequent_log_interval  # 5 minutes for subsequent logs
+        self.first_log_done = False  # Track if first log has been done
         self.last_log_time = time.time()
         self.frame_count = 0
         self.detection_count = 0
@@ -120,7 +122,10 @@ class StatusLogger:
             
         # Check if it's time to write a status update
         current_time = time.time()
-        if current_time - self.last_log_time >= self.log_interval:
+        # Use first log interval if first log hasn't been done yet, otherwise use subsequent interval
+        log_interval = self.first_log_interval if not self.first_log_done else self.subsequent_log_interval
+        
+        if current_time - self.last_log_time >= log_interval:
             # Calculate performance stats
             perf_stats = {}
             
@@ -168,6 +173,7 @@ class StatusLogger:
                 'memory': memory_stats
             })
             self.last_log_time = current_time
+            self.first_log_done = True  # Mark that first log has been done
             
     def _log_worker(self):
         """Worker thread that processes the log queue."""

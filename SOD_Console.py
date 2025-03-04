@@ -41,11 +41,10 @@ class ParameterConsole:
         self.create_filter_controls(main_frame, 0)
         self.create_rcnn_controls(main_frame, 1)
         self.create_anomaly_detection(main_frame, 2)
-        self.create_sliding_window(main_frame, 3)
         
         # Add apply and reset buttons
         btn_frame = ttk.Frame(main_frame)
-        btn_frame.grid(row=4, column=0, columnspan=2, pady=10)
+        btn_frame.grid(row=3, column=0, columnspan=2, pady=10)
         
         apply_btn = ttk.Button(btn_frame, text="Apply Changes", command=self.apply_changes)
         apply_btn.pack(side=tk.LEFT, padx=5)
@@ -145,16 +144,6 @@ class ParameterConsole:
             setattr(self, var_name, var_type())
             ttk.Entry(frame, textvariable=getattr(self, var_name), width=10).grid(row=i, column=1, padx=5)
             
-    def create_sliding_window(self, parent, row):
-        """Create Sliding Window Parameters section."""
-        frame = ttk.LabelFrame(parent, text="Sliding Window Parameters", padding="5")
-        frame.grid(row=row, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
-        
-        # Min Dark Region Size
-        ttk.Label(frame, text="MIN_DARK_REGION_SIZE:").grid(row=0, column=0, sticky=tk.W)
-        self.dark_region_var = tk.IntVar()
-        ttk.Entry(frame, textvariable=self.dark_region_var, width=10).grid(row=0, column=1, padx=5)
-        
     def load_current_values(self):
         """Load current values from SOD_Constants."""
         def _load():
@@ -181,9 +170,6 @@ class ParameterConsole:
                 self.min_contrast_var.set(const.MIN_CONTRAST)
                 self.min_contour_var.set(const.MIN_CONTOUR_DIMENSION)
                 
-                # Sliding Window
-                self.dark_region_var.set(const.MIN_DARK_REGION_SIZE)
-                
                 # Store original values
                 self.original_values = {
                     'MAX_LENS_FLARES': const.MAX_LENS_FLARES,
@@ -195,8 +181,7 @@ class ParameterConsole:
                     'MORPH_KERNEL_SIZE': const.MORPH_KERNEL_SIZE,
                     'MAX_BG_BRIGHTNESS': const.MAX_BG_BRIGHTNESS,
                     'MIN_CONTRAST': const.MIN_CONTRAST,
-                    'MIN_CONTOUR_DIMENSION': const.MIN_CONTOUR_DIMENSION,
-                    'MIN_DARK_REGION_SIZE': const.MIN_DARK_REGION_SIZE
+                    'MIN_CONTOUR_DIMENSION': const.MIN_CONTOUR_DIMENSION
                 }
                 
                 # Initialize current values with original values
@@ -228,8 +213,7 @@ class ParameterConsole:
                     'MORPH_KERNEL_SIZE': self.morph_var.get(),
                     'MAX_BG_BRIGHTNESS': self.max_bg_var.get(),
                     'MIN_CONTRAST': self.min_contrast_var.get(),
-                    'MIN_CONTOUR_DIMENSION': self.min_contour_var.get(),
-                    'MIN_DARK_REGION_SIZE': self.dark_region_var.get()
+                    'MIN_CONTOUR_DIMENSION': self.min_contour_var.get()
                 }
                 
                 # Validate values
@@ -252,40 +236,41 @@ class ParameterConsole:
         self._queue_gui_update(_apply)
         
     def on_closing(self):
-        """Handle window closing."""
-        def _close():
-            if self.root is not None:
-                self.root.withdraw()  # Hide window instead of destroying
+        """Handle window closing event."""
+        self.is_running = False
+        if self.root:
+            self.root.destroy()
+            self.root = None
         
-        self._queue_gui_update(_close)
+    def start(self):
+        """Start the console in a separate thread."""
+        if self.is_running:
+            return
+            
+        self.is_running = True
         
+        # Initialize GUI components
+        self.initialize()
+        
+        # Start the main loop
+        if self.root:
+            try:
+                self.root.mainloop()
+            except Exception as e:
+                print(f"Error in console mainloop: {str(e)}")
+            finally:
+                self.is_running = False
+                
     def stop(self):
         """Stop the console."""
-        def _stop():
-            self.is_running = False
-            if self.root is not None:
-                self.root.quit()
-                self.root.destroy()
-                self.root = None
-        
-        self._queue_gui_update(_stop)
-            
-    def run(self):
-        """Start the console."""
-        if self.root is None:
-            self.initialize()
-            
-        try:
-            self.is_running = True
-            self.root.mainloop()
-        except Exception as e:
-            print(f"Error running console: {str(e)}")
-        finally:
-            self.is_running = False
+        self.is_running = False
+        if self.root:
+            self.root.quit()
+            self.root = None
 
 def main():
     console = ParameterConsole()
-    console.run()
+    console.start()
 
 if __name__ == "__main__":
     main() 

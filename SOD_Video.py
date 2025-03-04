@@ -144,10 +144,9 @@ class VideoManager:
     def __init__(self):
         self.cap: Optional[cv2.VideoCapture] = None
         self.fps = 54  # Default fallback FPS
-        # Initialize with small buffer size, will be updated when fps is set
-        self.frame_buffer = deque(maxlen=1)  # Will be updated when fps is set
-        self.annotated_buffer = deque(maxlen=1)  # Will be updated when fps is set
-        self.debug_buffer = deque(maxlen=1)  # Will be updated when fps is set
+        # Initialize with proper buffer size based on default FPS
+        buffer_size = int(BUFFER_SECONDS * self.fps)
+        self.frame_buffer = deque(maxlen=buffer_size)  # Initialize with correct size
         self.video_writer = ThreadedVideoWriter()
         self.recording = False
         self.frames_since_detection = 0
@@ -186,21 +185,40 @@ class VideoManager:
         return number
 
     def add_to_buffer(self, frame: np.ndarray, annotated_frame: Optional[np.ndarray] = None, debug_view: Optional[np.ndarray] = None) -> None:
-        """Add frame to buffer, optionally with annotations."""
-        # Only make a copy if we need to (when frame might be modified later)
-        # For raw frames from capture, they're already copies so we can use them directly
-        self.frame_buffer.append(frame)
+        """
+        Add frame to buffer, optionally with annotations.
         
-        # If annotations provided, add them too, otherwise add None as placeholder
-        self.annotated_buffer.append(annotated_frame.copy() if annotated_frame is not None else None)
-        self.debug_buffer.append(debug_view.copy() if debug_view is not None else None)
+        Frames are added to the right end of the deque (newest frames).
+        When the buffer is full, the oldest frame is automatically removed from the left end.
+        When we convert the deque to a list, the oldest frames will be at the beginning of the list.
+        """
+        # Only add frames that have been fully processed (have annotations)
+        if annotated_frame is None:
+            return
+            
+        # Store all three components in a single buffer entry to keep them in sync
+        # This is more efficient than maintaining separate buffers
+        self.frame_buffer.append((
+            frame.copy() if frame is not None else None,
+            annotated_frame.copy() if annotated_frame is not None else None,
+            debug_view.copy() if debug_view is not None else None
+        ))
 
     def update_buffer_annotations(self, annotated_frame: np.ndarray, debug_view: Optional[np.ndarray] = None) -> None:
-        """Update the most recent buffer entry with annotations."""
-        if len(self.annotated_buffer) > 0:
-            # Replace the last entry with the annotated version
-            self.annotated_buffer[-1] = annotated_frame
-            self.debug_buffer[-1] = debug_view
+        """
+        Update the most recent buffer entry with annotations.
+        Note: This method is kept for backward compatibility but is no longer needed
+        with the new buffer approach.
+        """
+        if len(self.frame_buffer) > 0:
+            # Get the last entry
+            raw_frame, _, _ = self.frame_buffer[-1]
+            # Replace it with updated annotations
+            self.frame_buffer[-1] = (
+                raw_frame,
+                annotated_frame.copy() if annotated_frame is not None else None,
+                debug_view.copy() if debug_view is not None else None
+            )
 
     def start_recording(self, frame_size: tuple, debug_view: Optional[np.ndarray] = None) -> bool:
         """Start recording video with buffer."""
@@ -218,25 +236,33 @@ class VideoManager:
             
             # Pre-allocate a single combined frame buffer to reuse
             combined_buffer = None
+            frames_written = 0
             
-            # Write all buffered frames first
-            for i in range(buffer_length):
-                # Get corresponding frame, annotated frame and debug view
-                frame = self.frame_buffer[i]
-                annotated = self.annotated_buffer[i]
-                frame_debug = self.debug_buffer[i]
-                
-                # If this frame doesn't have annotations yet, create a basic one
+            # Convert buffer to list to ensure we process in correct order (oldest to newest)
+            # The deque stores newest frames at the end, so we need to start from the beginning
+            # of the list to get the oldest frames first
+            buffer_list = list(self.frame_buffer)
+            
+            # Get the detection frame debug view (from the last frame in buffer)
+            detection_debug_view = None
+            if buffer_length > 0:
+                _, _, frame_debug = buffer_list[-1]
+                detection_debug_view = frame_debug if frame_debug is not None else debug_view
+            
+            # Write all buffered frames in chronological order (oldest to newest)
+            # For each frame, use the main view from that frame but the debug view from the detection frame
+            for i, (raw, annotated, _) in enumerate(buffer_list):
+                # Skip frames without annotations
                 if annotated is None:
-                    annotated = frame
+                    continue
                 
-                # Create combined view with debug
-                # Use the frame's own debug view if available, otherwise use the current one
-                current_debug = frame_debug if frame_debug is not None else debug_view
+                frames_written += 1
                 
-                if current_debug is not None:
-                    h, w = annotated.shape[:2]
-                    debug_h, debug_w = current_debug.shape[:2]
+                h, w = annotated.shape[:2]
+                
+                # Use the detection debug view for all frames
+                if detection_debug_view is not None:
+                    debug_h, debug_w = detection_debug_view.shape[:2]
                     
                     # Reuse or create combined buffer
                     if combined_buffer is None or combined_buffer.shape != (max(h, debug_h), w + debug_w, 3):
@@ -244,12 +270,16 @@ class VideoManager:
                     else:
                         combined_buffer.fill(0)
                     
-                    # Fill the combined buffer
-                    combined_buffer[:debug_h, :debug_w] = current_debug
+                    # Fill the combined buffer - detection debug view on left, current frame on right
+                    combined_buffer[:debug_h, :debug_w] = detection_debug_view
                     combined_buffer[:h, debug_w:] = annotated
-                    self.video_writer.write(combined_buffer)
+                    
+                    # Write the combined frame
+                    self.video_writer.write(combined_buffer.copy())
                 else:
-                    self.video_writer.write(annotated)
+                    self.video_writer.write(annotated.copy())
+            
+            print(f"Successfully wrote {frames_written} buffered frames to video")
             
             self.recording = True
             self.frames_since_detection = 0
@@ -291,31 +321,42 @@ class VideoManager:
             self.cap.release()
         self.stop_recording()
         self.frame_buffer.clear()
-        self.annotated_buffer.clear()
-        self.debug_buffer.clear()
 
     def set_fps(self, fps: float):
         """Update FPS and buffer sizes."""
         old_fps = self.fps
         self.fps = max(1.0, fps)  # Ensure positive FPS
         
-        # Only resize buffers if FPS has changed significantly
-        if abs(old_fps - self.fps) > 0.1:
-            buffer_size = int(BUFFER_SECONDS * self.fps)
+        # Calculate new buffer size
+        buffer_size = int(BUFFER_SECONDS * self.fps)
+        
+        # Only resize buffers if FPS has changed significantly or buffer size is wrong
+        if abs(old_fps - self.fps) > 0.1 or self.frame_buffer.maxlen != buffer_size:
+            # Create new buffer with correct size and preserve existing content
+            old_buffer = list(self.frame_buffer)
+            self.frame_buffer = deque(maxlen=buffer_size)
             
-            # Create new buffers with correct size and preserve existing content
-            # This is more efficient than copying frame by frame
-            self.frame_buffer = deque(self.frame_buffer, maxlen=buffer_size)
-            self.annotated_buffer = deque(self.annotated_buffer, maxlen=buffer_size)
-            self.debug_buffer = deque(self.debug_buffer, maxlen=buffer_size)
+            # Copy existing frames to new buffer
+            for item in old_buffer:
+                self.frame_buffer.append(item)
             
-            print(f"Video FPS set to: {self.fps:.2f}")
-            print(f"Buffer size set to: {buffer_size} frames ({BUFFER_SECONDS} seconds)")
+            print(f"Video FPS set to: {self.fps:.2f}, buffer size: {buffer_size} frames")
         
     def create_combined_frame(self, annotated_frame: np.ndarray, debug_view: np.ndarray, 
-                             combined_buffer: Optional[np.ndarray] = None) -> np.ndarray:
+                             combined_buffer: Optional[np.ndarray] = None,
+                             has_detection: bool = False) -> np.ndarray:
         """Create a combined frame with debug view and main view side by side.
-        Reuses the provided buffer if possible to avoid memory allocations."""
+        Reuses the provided buffer if possible to avoid memory allocations.
+        
+        Args:
+            annotated_frame: The main view frame
+            debug_view: The debug view frame
+            combined_buffer: Optional pre-allocated buffer to reuse
+            has_detection: Whether this frame has a detection
+        
+        Returns:
+            Combined frame with debug view on left and main view on right
+        """
         if debug_view is None:
             return annotated_frame
             
@@ -328,7 +369,7 @@ class VideoManager:
         else:
             combined_buffer.fill(0)
         
-        # Fill the combined buffer
+        # Always show both views
         combined_buffer[:debug_h, :debug_w] = debug_view
         combined_buffer[:h, debug_w:] = annotated_frame
         

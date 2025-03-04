@@ -124,7 +124,7 @@ class Constants:
 
         # Filtering Options
         self.BORDER_MARGIN = 5  # How many pixels from space box border to consider "touching"
-        self.MAX_VALID_DETECTIONS = 5  # Maximum number of valid detections per frame
+        self.MAX_VALID_DETECTIONS = 4  # Maximum number of valid detections per frame
         self.MAX_CONTOURS_PER_FRAME = 10  # Maximum number of contours to process per frame
 
         # Display Parameters

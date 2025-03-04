@@ -145,6 +145,11 @@ class CaptureManager:
             if hasattr(debug_view, 'metadata') and debug_view.metadata.get('skip_save'):
                 print(f"\nSkipping save: {debug_view.metadata['skip_save']}")
                 return
+                
+            # Skip save if "No Feed" was detected by pixel check
+            if hasattr(debug_view, 'metadata') and debug_view.metadata.get('nofeed_detected_by_pixel'):
+                print(f"\nSkipping save: No Feed frame detected by pixel check")
+                return
             
             # Create combined image if debug view provided
             if debug_view is not None:
