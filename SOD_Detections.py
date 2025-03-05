@@ -489,7 +489,6 @@ class SpaceObjectDetector:
                     results.metadata['rcnn_frame'] = True
                     if is_test_frame:
                         results.metadata['test_frame'] = True
-                        print("Processing test frame with immediate RCNN detection")
                 except Exception:
                     results.metadata['rcnn_frame'] = False
             
@@ -554,7 +553,7 @@ class SpaceObjectDetector:
                     # If boxes don't overlap, process this one too
                     if (x2 < main_x1 or x1 > main_x2 or 
                         y2 < main_y1 or y1 > main_y2):
-                        box_results = self.detect_anomalies(frame, space_box, avoid_boxes)
+                        box_results = self.detect_anomalies(frame, [space_box], avoid_boxes)
                         if box_results.anomalies:
                             all_anomalies.extend(box_results.anomalies)
                             if 'anomaly_metrics' in box_results.metadata:
@@ -701,13 +700,11 @@ class SpaceObjectDetector:
             # Push frame to RCNN queue with high priority
             if self.rcnn_queue.empty():
                 self.rcnn_queue.put_nowait(frame.copy())
-                print("Forcing immediate RCNN detection on test frame")
             else:
                 # Clear queue and add new frame
                 try:
                     self.rcnn_queue.get_nowait()  # Remove existing frame
                     self.rcnn_queue.put_nowait(frame.copy())
-                    print("Replaced queued frame with test frame for immediate RCNN detection")
                 except queue.Empty:
                     pass
         except Exception as e:

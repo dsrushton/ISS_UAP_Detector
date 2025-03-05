@@ -40,8 +40,11 @@ class DisplayManager:
         self.current_avoid_box = None
         
         # Set up mouse callback
-        cv2.namedWindow('Main View')
-        cv2.setMouseCallback('Main View', self._mouse_callback)
+        cv2.namedWindow('ISS Object Detection')
+        cv2.setMouseCallback('ISS Object Detection', self._mouse_callback)
+        
+        # Set initial window size and title
+        self._set_window_size()
         self._update_window_title()
     
     def set_logger(self, logger):
@@ -53,12 +56,22 @@ class DisplayManager:
         self.is_streaming = is_streaming
         self._update_window_title()
 
+    def _set_window_size(self):
+        """Set the window to the correct size."""
+        # Combined view size is always 939*2 x 720
+        cv2.resizeWindow('ISS Object Detection', 939*2, 720)
+        # Force window size to be maintained
+        cv2.waitKey(1)  # This helps ensure the resize takes effect
+
     def _update_window_title(self) -> None:
         """Update the window title with streaming status."""
-        title = "Main View"
         if self.is_streaming:
-            title = "🔴 STREAMING - " + title
-        cv2.setWindowTitle('Main View', title)
+            title = "[STREAMING] ISS Object Detection"  # Streaming indicator
+        else:
+            title = "ISS Object Detection"  # Normal title
+        cv2.setWindowTitle('ISS Object Detection', title)
+        # Ensure window size is maintained
+        self._set_window_size()
 
     def _mouse_callback(self, event, x, y, flags, param):
         """Handle mouse events for avoid box drawing."""
@@ -351,20 +364,36 @@ class DisplayManager:
 
     def create_combined_view(self, frame: np.ndarray, debug: np.ndarray) -> np.ndarray:
         """Create combined view with debug information."""
-        if self.debug_view is None:
-            return frame
-            
-        debug_h, debug_w = self.debug_view.shape[:2]
-        frame_h, frame_w = frame.shape[:2]
+        # Always create a combined frame with fixed size
+        combined = np.zeros((720, 939*2, 3), dtype=np.uint8)
         
-        # Create combined frame
-        combined = np.zeros((frame_h, frame_w + debug_w, 3), dtype=np.uint8)
+        # If no debug view, create a black placeholder
+        if debug is None:
+            debug = np.zeros((720, 939, 3), dtype=np.uint8)
+            # Add a placeholder text
+            text = "No Space Detection"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 1.0
+            thickness = 2
+            (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, thickness)
+            text_x = (939 - text_width) // 2
+            text_y = (720 + text_height) // 2
+            cv2.putText(debug, text, (text_x, text_y), font, font_scale, (128, 128, 128), thickness)
         
         # Add debug view on left
-        combined[0:debug_h, 0:debug_w] = self.debug_view
+        combined[0:720, 0:939] = debug
         
         # Add main frame on right
-        combined[0:frame_h, debug_w:] = frame
+        combined[0:720, 939:] = frame
+        
+        # Add streaming indicator
+        if self.is_streaming:
+            # Red circle for streaming
+            cv2.circle(combined, (30, 30), 15, (0, 0, 255), -1)  # Filled red circle
+            cv2.putText(combined, "LIVE", (50, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        else:
+            # Yellow circle for not streaming
+            cv2.circle(combined, (30, 30), 15, (0, 255, 255), -1)  # Filled yellow circle
         
         return combined
 
