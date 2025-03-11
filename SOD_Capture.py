@@ -253,17 +253,12 @@ class CaptureManager:
                 if 'lf' in detections.rcnn_boxes and detections.rcnn_boxes['lf'] and not detections.anomalies:
                     return
                 
-                # Check if enough time has passed since the last save
-                current_time = time.time()
-                if current_time - self.last_save_time < SAVE_INTERVAL:
-                    # Not enough time has passed since the last save
-                    return
-                
                 # If we get here, we have a detection worth saving
-                # Generate a filename with the current suffix and increment it
-                filename = f"{self.current_video_number:05d}-{self.current_jpg_suffix}.jpg"
-                self.current_jpg_suffix = chr(ord(self.current_jpg_suffix) + 1)
-                self.last_save_time = current_time
+                # Use get_next_filename to generate a filename with the current suffix and increment it
+                # This ensures consistent suffix handling across all save operations
+                filename = self.get_next_filename(check_interval=False)
+                if filename is None:
+                    return
                 
                 # Save with the generated filename, but don't check interval again
                 self.save_detection(frame, debug_view, filename=filename, check_interval=False)

@@ -610,11 +610,6 @@ class DisplayManager:
             # Copy the frame to the center of the canvas
             self.padded_buffer[y_offset:y_offset+h, x_offset:x_offset+w] = frame
             
-            # Draw streaming indicator (red circle) if streaming
-            if self.is_streaming:
-                # Always show the streaming indicator when streaming is active
-                cv2.circle(self.padded_buffer, (30, 30), 15, (0, 0, 255), -1)
-            
             # Log the time taken for padding
             self.logger.log_operation_time('padded_view', time.time() - padded_start)
             

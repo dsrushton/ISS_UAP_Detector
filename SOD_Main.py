@@ -24,7 +24,9 @@ from SOD_Constants import (
     JPG_SAVE_DIR,
     RAW_SUBDIR,
     #VIDEO_FPS,
-    BUFFER_SECONDS
+    BUFFER_SECONDS,
+    POST_DETECTION_SECONDS,
+    SAVE_INTERVAL
 )
 from SOD_Utils import get_best_stream_url, crop_frame, ensure_save_directory
 from SOD_Video import VideoManager
@@ -326,6 +328,17 @@ class SpaceObjectDetectionSystem:
                     if self.capture:
                         self.capture.start_new_video(self.video.current_video_number)
                         self.capture.save_detection(annotated_frame, debug_view, check_interval=False)
+            # Process detections for saving JPGs with incremented suffixes
+            # This ensures that subsequent detections during the same video recording
+            # are saved with incremented suffixes (-a, -b, -c, etc.)
+            elif has_detection and self.video and self.video.recording and self.capture:
+                # Only process if we're within the POST_DETECTION_SECONDS window
+                # but after the SAVE_INTERVAL to avoid saving frames too frequently
+                current_time = time.time()
+                if (self.video.frames_since_detection / self.fps < POST_DETECTION_SECONDS and 
+                    current_time - self.capture.last_save_time >= SAVE_INTERVAL):
+                    # Process the detection to save a JPG with the next suffix
+                    self.capture.process_detections(annotated_frame, detections, debug_view)
             
             # Update recording if active
             if self.video and self.video.recording:
