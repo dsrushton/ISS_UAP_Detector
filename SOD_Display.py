@@ -65,8 +65,7 @@ class DisplayManager:
         """Set the window to the correct size."""
         # Use 1920x1080 for the window size to match our padded output
         cv2.resizeWindow('ISS Object Detection', 1920, 1080)
-        # Force window size to be maintained
-        cv2.waitKey(1)  # This helps ensure the resize takes effect
+        # No need for waitKey here, it will be handled in the main loop
 
     def _update_window_title(self) -> None:
         """Update the window title with streaming status."""
@@ -266,7 +265,7 @@ class DisplayManager:
         
         space_start = time.time()
         # Step 2: Draw the space region outline (blue)
-        cv2.drawContours(self.debug_buffer, space_contours, -1, CLASS_COLORS['space'], 2)
+        cv2.drawContours(self.debug_buffer, space_contours, -1, CLASS_COLORS['space'], 1)  # Reduced thickness to 1
         
         # Step 2.5: Draw the space bounding boxes from RCNN detections
         if boxes and len(boxes) > 0:
@@ -289,7 +288,7 @@ class DisplayManager:
                 roi = space_mask[y:y+h, x:x+w]
                 if roi.size > 0 and np.any(roi > 0):
                     # Draw the contour with a more visible color and thickness
-                    cv2.drawContours(self.debug_buffer, [contour], -1, CONTOUR_COLOR, 2)  # Increased thickness to 2
+                    cv2.drawContours(self.debug_buffer, [contour], -1, CONTOUR_COLOR, 1)  # Reduced thickness to 1
         
         # Step 4: Draw anomaly boxes and metrics
         if anomalies is not None and len(anomalies) > 0:
@@ -538,7 +537,10 @@ class DisplayManager:
             # Draw streaming indicator (red circle) if streaming
             if self.is_streaming:
                 # Always show the streaming indicator when streaming is active
-                cv2.circle(self.combined_buffer, (frame_w + debug_w - 30, 30), 15, (0, 0, 255), -1)
+                cv2.circle(self.combined_buffer, (30, 30), 15, (0, 0, 255), -1)
+            
+            # Log the time taken for creating the combined view (before padding)
+            self.logger.log_operation_time('combined_view', time.time() - combined_start)
                 
             # Pad the combined buffer to 1920x1080
             padded_combined = self._pad_to_1920x1080(self.combined_buffer)
@@ -557,7 +559,7 @@ class DisplayManager:
             if not self.is_streaming and hasattr(self, 'latest_detections') and self.latest_detections is not None:
                 self.draw_space_boxes_on_padded(padded_combined, self.latest_detections)
                 
-            self.logger.log_operation_time('combined_view', time.time() - combined_start)
+            self.logger.log_operation_time('total_combined_view', time.time() - combined_start)
             return padded_combined
             
         except Exception as e:
@@ -582,6 +584,8 @@ class DisplayManager:
         This preserves the original aspect ratio without distortion.
         """
         try:
+            padded_start = time.time()
+            
             if frame is None:
                 self.logger.log_error("_pad_to_1920x1080 received None for frame")
                 return np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -605,6 +609,14 @@ class DisplayManager:
             
             # Copy the frame to the center of the canvas
             self.padded_buffer[y_offset:y_offset+h, x_offset:x_offset+w] = frame
+            
+            # Draw streaming indicator (red circle) if streaming
+            if self.is_streaming:
+                # Always show the streaming indicator when streaming is active
+                cv2.circle(self.padded_buffer, (30, 30), 15, (0, 0, 255), -1)
+            
+            # Log the time taken for padding
+            self.logger.log_operation_time('padded_view', time.time() - padded_start)
             
             return self.padded_buffer
             
@@ -714,7 +726,7 @@ class DisplayManager:
                 adjusted_contours.append(adjusted_contour)
                 
             # Draw the adjusted contours
-            cv2.drawContours(padded_frame, adjusted_contours, -1, color, 2)
+            cv2.drawContours(padded_frame, adjusted_contours, -1, color, 1)  # Reduced thickness to 1
             
         # Draw space box labels
         scores = detections.rcnn_scores['space']

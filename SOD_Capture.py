@@ -78,6 +78,9 @@ class CaptureManager:
 
     def _save_worker(self):
         """Worker thread for handling frame saves."""
+        # Keep track of files we've already saved
+        saved_files = set()
+        
         while self.is_running:
             try:
                 # Get save data from queue
@@ -86,8 +89,22 @@ class CaptureManager:
                     break
                     
                 image, save_path = save_data
-                cv2.imwrite(save_path, image)
-                print(f"Saved frame to {save_path}")
+                print(f"DEBUG: Attempting to save to {save_path}")
+                
+                # Check if we've already saved this file
+                if save_path in saved_files:
+                    print(f"WARNING: Already saved {save_path}, skipping duplicate")
+                    self.save_queue.task_done()
+                    continue
+                
+                # Save the image
+                success = cv2.imwrite(save_path, image)
+                
+                if success:
+                    print(f"Saved frame to {save_path}")
+                    saved_files.add(save_path)
+                else:
+                    print(f"Failed to save frame to {save_path}")
                 
                 self.save_queue.task_done()
                 
@@ -151,6 +168,8 @@ class CaptureManager:
                 if filename is None:  # Too soon to save
                     return
             
+            print(f"DEBUG: save_detection called with filename: {filename}")
+            
             # Skip save if debug_view is None (no contour bounding boxes drawn)
             if debug_view is None:
                 print(f"\nSkipping save: No debug view available")
@@ -176,7 +195,9 @@ class CaptureManager:
             save_image = combined
             
             save_path = os.path.join(self.save_dir, filename)
-            print(f"Saved frame to {save_path}")
+            print(f"DEBUG: Queueing save to {save_path}")
+            
+            # Queue the save operation - actual save and print happens in worker thread
             self.save_queue.put((save_image, save_path))
             
         except Exception as e:
@@ -239,7 +260,13 @@ class CaptureManager:
                     return
                 
                 # If we get here, we have a detection worth saving
-                self.save_detection(frame, debug_view, check_interval=True)
+                # Generate a filename with the current suffix and increment it
+                filename = f"{self.current_video_number:05d}-{self.current_jpg_suffix}.jpg"
+                self.current_jpg_suffix = chr(ord(self.current_jpg_suffix) + 1)
+                self.last_save_time = current_time
+                
+                # Save with the generated filename, but don't check interval again
+                self.save_detection(frame, debug_view, filename=filename, check_interval=False)
                 
         except Exception as e:
             print(f"Error processing detections: {str(e)}")

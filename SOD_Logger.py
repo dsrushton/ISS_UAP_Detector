@@ -178,12 +178,10 @@ class StatusLogger:
             
             # Group operations for cleaner output
             operation_groups = {
-                'Main Pipeline': ['frame_read', 'detection', 'display_update', 'debug_view', 
-                                'video_buffer', 'video_recording', 'total_iteration'],
+                'Main Pipeline': ['frame_read', 'detection', 'debug_view', 'combined_view', 'padded_view', 'total_iteration'],
                 'RCNN Operations': ['rcnn_prep', 'rcnn_inference', 'rcnn_postprocess'],
-                'Detection Analysis': ['mask_creation', 'contour_finding', 'contour_analysis', 
-                                     'box_filtering', 'brightness_check'],
-                'Display Operations': ['display_prep', 'display_draw', 'display_show']
+                'Detection Analysis': ['mask_creation', 'contour_finding', 'contour_analysis'],
+                'Display Drawing': ['display_draw']
             }
             
             for group, operations in operation_groups.items():
@@ -519,14 +517,10 @@ class StatusLogger:
         
         # Group operations for cleaner output
         operation_groups = {
-            'Main Pipeline': ['frame_read', 'detection', 'display_update', 'debug_view', 
-                             'video_buffer', 'video_recording', 'total_iteration'],
-            'RCNN Operations': ['rcnn_inference', 'rcnn_process', 'rcnn_prep', 'rcnn_postprocess'],
-            'Detection Analysis': ['contour_detection', 'anomaly_detection', 'mask_creation', 
-                                  'contour_finding', 'contour_analysis', 'box_filtering', 'brightness_check'],
-            'Display Operations': ['display_draw', 'combined_view', 'debug_frame_copy', 'debug_space_box', 
-                                  'debug_contours', 'debug_anomalies'],
-            'Buffer Operations': ['buffer_append', 'recording_write']
+            'Main Pipeline': ['frame_read', 'detection', 'debug_view', 'combined_view', 'padded_view', 'total_iteration'],
+            'RCNN Operations': ['rcnn_prep', 'rcnn_inference', 'rcnn_postprocess'],
+            'Detection Analysis': ['mask_creation', 'contour_finding', 'contour_analysis'],
+            'Display Drawing': ['display_draw']
         }
         
         # Add grouped operations to log
