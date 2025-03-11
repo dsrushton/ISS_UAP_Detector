@@ -118,6 +118,7 @@ class Constants:
         self.MAX_CONTOUR_HEIGHT = 100
         self.MIN_CONTOUR_AREA = 36
         self.MAX_ASPECT_RATIO = 20.0
+        self.DARK_REGION_THRESHOLD = 30  # Maximum brightness for dark region detection
 
         # Sliding Window Parameters
         self.MIN_DARK_REGION_SIZE = 100

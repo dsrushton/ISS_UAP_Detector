@@ -249,17 +249,23 @@ class ParameterConsole:
             
         self.is_running = True
         
-        # Initialize GUI components
-        self.initialize()
+        # Run the console in a separate thread
+        console_thread = threading.Thread(target=self._run_console, daemon=True)
+        console_thread.start()
         
-        # Start the main loop
-        if self.root:
-            try:
+    def _run_console(self):
+        """Run the console in a separate thread."""
+        try:
+            # Initialize GUI components
+            self.initialize()
+            
+            # Start the main loop
+            if self.root:
                 self.root.mainloop()
-            except Exception as e:
-                print(f"Error in console mainloop: {str(e)}")
-            finally:
-                self.is_running = False
+        except Exception as e:
+            print(f"Error in console thread: {str(e)}")
+        finally:
+            self.is_running = False
                 
     def stop(self):
         """Stop the console."""

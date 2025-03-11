@@ -24,7 +24,9 @@ from SOD_Constants import (
     JPG_SAVE_DIR,
     RAW_SUBDIR,
     #VIDEO_FPS,
-    BUFFER_SECONDS
+    BUFFER_SECONDS,
+    POST_DETECTION_SECONDS,
+    SAVE_INTERVAL
 )
 from SOD_Utils import get_best_stream_url, crop_frame, ensure_save_directory
 from SOD_Video import VideoManager
@@ -51,22 +53,25 @@ class SpaceObjectDetectionSystem:
         self.detector = SpaceObjectDetector()
         self.display = DisplayManager()
         self.capture = CaptureManager()
-        self.logger = StatusLogger()
+        self.logger = None  # Will be initialized in initialize()
         self.console = None  # Will be initialized later
         self.stream = None  # Will be initialized after we know the frame dimensions
+        self.video = None   # Will be initialized in initialize() after logger
         
         # State tracking
         self.frame_count: int = 0
         self.burst_remaining: int = 0
         self.is_running: bool = False
+        self.fps: float = 60.0  # Default FPS value
         
         # Test image state
         self.test_images = []
         self.current_test_image = 0
         self.inject_test_frames = 0
+        self.frame_display_start = 180  # Default to 3 seconds at 60 FPS
+        self.frames_per_test_image = 0
+        self.current_image_frames = 0
         self.current_frame_is_test = False  # Flag to track if current frame is a test frame
-        
-        self.video = VideoManager()
         
         # Add combined frame buffer - initialize as None, will be created when needed
         self.combined_frame_buffer = None
@@ -80,112 +85,131 @@ class SpaceObjectDetectionSystem:
         self.running = False
         self.frame_count = 0
         self.last_save_time = 0
-        self.frame_display_start = 180  # Default value for test frame display duration
         
     def initialize(self) -> bool:
-        """
-        Initialize all system components.
-        
-        Returns:
-            bool: True if initialization successful, False otherwise
-        """
+        """Initialize the system components."""
         try:
-            # Initialize logger
+            # Initialize logger first
+            from SOD_Logger import StatusLogger
+            self.logger = StatusLogger()
+            
+            # Start the logger thread
             self.logger.start()
             
-            # Disable OpenCV's default logger output to console
-            opencv_logger = logging.getLogger('opencv')
-            opencv_logger.setLevel(logging.ERROR)
+            # Set verbose mode for debugging
+            self.logger.verbose_console = False  # Set to True for more detailed logging
             
-            # Create custom handler for OpenCV logs
+            print("Initializing Space Object Detection System...")
+            
+            # Initialize video manager
+            from SOD_Video import VideoManager
+            self.video = VideoManager(self.logger)
+            
+            # Set up display manager
+            self.display.set_logger(self.logger)
+            
+            # Set up detector
+            self.detector.set_logger(self.logger)
+            
+            # Initialize stream manager (will be set up when needed)
+            self.stream = None
+            
+            # Set up OpenCV logging to our logger
             class OpenCVLogHandler(logging.Handler):
                 def __init__(self, logger):
                     super().__init__()
                     self.logger = logger
-                    self.warning_counts = {}
-                    self.last_log_time = time.time()
+                    self.last_warning_time = 0
+                    self.warning_count = 0
                     
                 def emit(self, record):
                     # Check if message contains HTTP connection warning or stream timeout
-                    if "HTTP connection" in record.msg or "Stream timeout" in record.msg:
-                        # Extract warning type
-                        warning_type = "HTTP connection warning" if "HTTP connection" in record.msg else "Stream timeout"
-                        
-                        # Increment count for this warning type
-                        if warning_type in self.warning_counts:
-                            self.warning_counts[warning_type] += 1
-                        else:
-                            self.warning_counts[warning_type] = 1
-                        
-                        # Log summary every 5 minutes
+                    msg = self.format(record)
+                    if "CURL" in msg or "error" in msg.lower() or "fail" in msg.lower():
+                        # Rate limit these warnings to avoid spam
                         current_time = time.time()
-                        if current_time - self.last_log_time > 300:  # 5 minutes
-                            for wtype, count in self.warning_counts.items():
-                                self.logger.log_error(f"Accumulated {count} {wtype}s in the last 5 minutes")
-                            # Reset counters and timer
-                            self.warning_counts = {}
-                            self.last_log_time = current_time
+                        if current_time - self.last_warning_time > 5.0:  # Only log every 5 seconds
+                            self.logger.log_error(f"OpenCV: {msg}")
+                            self.last_warning_time = current_time
+                            self.warning_count = 1
+                        else:
+                            self.warning_count += 1
+                            if self.warning_count % 10 == 0:  # Log every 10th warning in a burst
+                                self.logger.log_error(f"OpenCV: {msg} (repeated {self.warning_count} times)")
             
-            # Add custom handler to OpenCV logger
-            handler = OpenCVLogHandler(self.logger)
-            opencv_logger.addHandler(handler)
+            # Set up OpenCV logging
+            cv_logger = logging.getLogger('opencv')
+            cv_logger.setLevel(logging.WARNING)
+            cv_logger.addHandler(OpenCVLogHandler(self.logger))
             
-            # Disable OpenCV's default logger output to console
-            os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
-            
-            # Initialize the model
-            if not self.detector.initialize_model():
-                print("Failed to initialize detector model")
-                return False
-                
-            # Set logger for detector and display
-            self.detector.set_logger(self.logger)
-            self.display.set_logger(self.logger)
-                
-            # Initialize capture system
-            if not self.capture.initialize():
-                print("Failed to initialize capture system")
-                return False
-                
             # Load test images
-            if not self.load_test_images():
-                print("Warning: Could not load test images")
+            self.load_test_images()
             
-            # Launch parameter console in a separate thread
-            if self.console is None:
-                self.console = ParameterConsole()
-                # Start console in a separate thread
-                console_thread = threading.Thread(target=self.console.start)
-                console_thread.daemon = True  # Make thread daemon so it exits with main program
-                console_thread.start()
-                time.sleep(0.5)  # Give console time to initialize
+            # Initialize capture manager
+            self.capture.initialize()
             
+            # Initialize parameter console
+            self.console = ParameterConsole()
+            self.console.start()
+            
+            # Initialize model
+            if not self.detector.initialize_model():
+                self.logger.log_error("Failed to initialize detection model")
+                return False
+                
+            # Create output directories
+            os.makedirs(VIDEO_SAVE_DIR, exist_ok=True)
+            os.makedirs(JPG_SAVE_DIR, exist_ok=True)
+            
+            # Set up display
+            self._setup_display()
+            
+            print("Initialization complete")
             return True
             
         except Exception as e:
-            print(f"Error during initialization: {str(e)}")
+            print(f"Initialization error: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def toggle_streaming(self) -> None:
         """Toggle streaming state and update display."""
+        # Track last streaming message time
+        if not hasattr(self, 'last_streaming_message_time'):
+            self.last_streaming_message_time = 0
+            
+        current_time = time.time()
+        should_print = (current_time - self.last_streaming_message_time) >= 60  # Only print once per minute
+        
         if not self.stream.is_streaming:
             # Prompt for stream key if not already set
             if not self.stream.stream_key:
                 # Use hardcoded stream key for testing
                 stream_key = "3qsu-m42f-vp02-9w0r-f42a"  # Hardcoded for testing
                 self.stream.stream_key = stream_key
-                print(f"Using stream key: {stream_key[:4]}...{stream_key[-4:]}")
+                if should_print:
+                    print(f"Using stream key: {stream_key[:4]}...{stream_key[-4:]}")
             
-            print("\nAttempting to start YouTube stream...")
+            if should_print:
+                print("\nAttempting to start YouTube stream...")
+                
             if self.stream.start_streaming(self.stream.frames_queue):
                 self.display.set_streaming(True)
-                print("\nStream started - check YouTube Studio")
-                print("Note: It may take 60-90 seconds for YouTube to show the stream")
+                if should_print:
+                    print("\nStream started - check YouTube Studio")
+                    print("Note: It may take 60-90 seconds for YouTube to show the stream")
+                    self.last_streaming_message_time = current_time
             else:
-                print("\nFailed to start streaming - check console for details")
-                print("Press 'i' to run streaming troubleshooting")
+                if should_print:
+                    print("\nFailed to start streaming - check console for details")
+                    print("Press 'i' to run streaming troubleshooting")
+                    self.last_streaming_message_time = current_time
         else:
-            print("\nStopping YouTube stream...")
+            if should_print:
+                print("\nStopping YouTube stream...")
+                self.last_streaming_message_time = current_time
+                
             self.stream.stop_streaming()
             self.display.set_streaming(False)
 
@@ -200,6 +224,9 @@ class SpaceObjectDetectionSystem:
         """
         try:
             iteration_start = time.time()
+            
+            # Start frame timing in logger
+            self.logger.start_frame()
             
             # Get latest constants
             import SOD_Constants as const
@@ -221,7 +248,7 @@ class SpaceObjectDetectionSystem:
                     
                     # Only show message at the start and then every second
                     if self.inject_test_frames == self.frame_display_start:  # First frame of the sequence
-                        print(f"\nInjecting test frame {current_img_num}/{len(self.test_images)} - displaying for ~3 seconds")
+                        print(f"\nInjecting test frame {current_img_num}/{len(self.test_images)} - displaying for 1 second")
                     elif self.inject_test_frames % 60 == 0:  # Print update every second
                         print(f"Test frame {current_img_num}/{len(self.test_images)} - {remaining_seconds} seconds remaining")
                     
@@ -231,20 +258,35 @@ class SpaceObjectDetectionSystem:
                     # Move to next image when done with current one
                     if self.inject_test_frames == 0:
                         self.current_test_image += 1
-                        self.inject_test_frames = self.frame_display_start
-                        print(f"\nMoving to test frame {self.current_test_image + 1}/{len(self.test_images)}")
+                        
+                        # Check if we've gone through all test images
+                        if self.current_test_image >= len(self.test_images):
+                            # Reset test frame injection and return to main feed
+                            self.inject_test_frames = 0
+                            self.current_test_image = 0
+                            print(f"\nCompleted test frame cycle, returning to main feed")
+                        else:
+                            # Continue to next test image
+                            self.inject_test_frames = self.frame_display_start
+                            print(f"\nMoving to test frame {self.current_test_image + 1}/{len(self.test_images)}")
             
             # Crop frame - but skip for test frames since they're already cropped
             if not self.current_frame_is_test:
                 frame = frame[:, const.get_value('CROP_LEFT'):-const.get_value('CROP_RIGHT')]  # Crop left and right sides
             
+            # Check if we have avoid boxes from the display manager
+            if avoid_boxes is None and self.display:
+                avoid_boxes = self.display.avoid_boxes
+            
             # Run detection
             detection_start = time.time()
-            detections = self.detector.process_frame(frame, self.display.avoid_boxes, is_test_frame=self.current_frame_is_test)
+            detections = self.detector.process_frame(frame, avoid_boxes, is_test_frame=self.current_frame_is_test)
             self.logger.log_operation_time('detection', time.time() - detection_start)
             
             if detections is None:
+                self.logger.log_error("Detection failed")
                 self.logger.log_operation_time('total_iteration', time.time() - iteration_start)
+                self.logger.end_frame()
                 return True
             
             # Update display
@@ -259,29 +301,51 @@ class SpaceObjectDetectionSystem:
                     detections.rcnn_boxes['space'],
                     detections.contours,
                     detections.anomalies,
-                    detections.metadata
+                    detections.metadata,
+                    detections.space_mask if hasattr(detections, 'space_mask') else None,
+                    detections.space_contours if hasattr(detections, 'space_contours') else None
                 ))
                 debug_view = self.display.create_debug_view(frame, space_data)
+            self.logger.log_operation_time('debug_view', time.time() - display_start)
             
             # Create combined view
             combined_frame = self.display.create_combined_view(annotated_frame, debug_view)
             
-            # Update video buffer with combined frame
-            self.video.update_buffer_annotations(combined_frame, debug_view)
-            
             # Handle recording based on detections
             has_detection = bool(detections.anomalies)
-            if has_detection and not self.video.recording:  # Only start recording if not already recording
+            
+            # Add frame to video buffer
+            if self.video:
+                self.video.add_to_buffer(combined_frame)
+            
+            # Start recording if detection found and not already recording
+            if has_detection and self.video and not self.video.recording:
                 # Use fixed dimensions since both frames are 939x720
-                frame_size = (939 * 2, 720)  # Width is 939*2 for combined view, height is 720
+                frame_size = (combined_frame.shape[1], combined_frame.shape[0])
                 if self.video.start_recording(frame_size, debug_view):
                     print(f"\nStarted recording: {self.video.current_video_number:05d}.avi")
                     # Save first detection frame
-                    self.capture.start_new_video(self.video.current_video_number)
-                    self.capture.save_detection(annotated_frame, debug_view, check_interval=False)
+                    if self.capture:
+                        self.capture.start_new_video(self.video.current_video_number)
+                        self.capture.save_detection(annotated_frame, debug_view, check_interval=False)
+            # Process detections for saving JPGs with incremented suffixes
+            # This ensures that subsequent detections during the same video recording
+            # are saved with incremented suffixes (-a, -b, -c, etc.)
+            elif has_detection and self.video and self.video.recording and self.capture:
+                # Only process if we're within the POST_DETECTION_SECONDS window
+                # but after the SAVE_INTERVAL to avoid saving frames too frequently
+                current_time = time.time()
+                if (self.video.frames_since_detection / self.fps < POST_DETECTION_SECONDS and 
+                    current_time - self.capture.last_save_time >= SAVE_INTERVAL):
+                    # Process the detection to save a JPG with the next suffix
+                    self.capture.process_detections(annotated_frame, detections, debug_view)
+            
+            # Update recording if active
+            if self.video and self.video.recording:
+                self.video.update_recording(combined_frame, has_detection)
             
             # Stream frame if streaming is active
-            if self.stream.is_streaming:
+            if self.stream and self.stream.is_streaming:
                 # Resize the combined frame to match the expected dimensions for streaming
                 if combined_frame.shape[1] != self.stream.frame_width or combined_frame.shape[0] != self.stream.frame_height:
                     stream_frame = cv2.resize(combined_frame, (self.stream.frame_width, self.stream.frame_height))
@@ -299,10 +363,14 @@ class SpaceObjectDetectionSystem:
             # Log timing information
             self.logger.log_operation_time('display', time.time() - display_start)
             self.logger.log_operation_time('total_iteration', time.time() - iteration_start)
+            
+            # End frame timing in logger
+            self.logger.end_frame()
 
             # Handle burst capture
-            if self.burst_remaining > 0:
-                self.capture.save_raw_frame(frame)
+            if hasattr(self, 'burst_remaining') and self.burst_remaining > 0:
+                if self.capture:
+                    self.capture.save_raw_frame(frame)
                 self.burst_remaining -= 1
             
             # Use a 1ms timeout for key checks to minimize display latency
@@ -312,7 +380,14 @@ class SpaceObjectDetectionSystem:
                 self._cleanup()
                 return False
             elif key == ord('t'):
-                self.inject_test_frames = 1  # Inject just one test frame at a time
+                if self.inject_test_frames > 0:
+                    # If already in test mode, stop it
+                    self.inject_test_frames = 0
+                    self.current_test_image = 0
+                    print("\nStopped test frame cycle, returning to main feed")
+                else:
+                    # Start cycling through all test frames
+                    self.start_test_injection()
             elif key == ord('b'):
                 if self.inject_test_frames > 0:
                     # Exit test frame mode
@@ -321,16 +396,42 @@ class SpaceObjectDetectionSystem:
                     print("\nExiting test frame mode")
                 else:
                     # Start burst capture
-                    self.burst_remaining = BURST_CAPTURE_FRAMES
+                    if not hasattr(self, 'burst_remaining'):
+                        self.burst_remaining = 0
+                    self.burst_remaining = const.get_value('BURST_CAPTURE_FRAMES')
                     print("\nStarting burst capture...")
             elif key == ord('c'):
-                self.display.avoid_boxes = []  # Clear avoid boxes
-                print("\nCleared avoid boxes")
+                if self.display:
+                    self.display.avoid_boxes = []  # Clear avoid boxes
+                    print("\nCleared avoid boxes")
+            elif key == ord('s') or key == ord('1'):
+                self.toggle_streaming()
+            elif key == ord('2'):
+                # Run streaming troubleshooting
+                print("\nTroubleshooting key pressed - running diagnostics...")
+                if hasattr(self, 'stream') and self.stream:
+                    self.stream.troubleshoot_streaming()
+            elif key == ord('4'):
+                # Start burst capture
+                if hasattr(self, 'capture') and self.capture:
+                    self.capture.start_burst_capture()
+                    print("\nStarted burst capture mode")
+            elif key == ord('5'):
+                # Pause capture for 5 seconds
+                if hasattr(self, 'capture') and self.capture:
+                    self.capture.pause_capture()
+                    print("\nPaused capture for 5 seconds")
             
             return True
             
         except Exception as e:
-            print(f"Error processing frame: {str(e)}")
+            # Log the error and return None to indicate failure
+            error_msg = f"Error processing frame: {str(e)}"
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+            if hasattr(self, 'logger') and self.logger:
+                self.logger.log_error(error_msg)
             return None
 
     def _attempt_connection(self, source: str, is_youtube: bool = False) -> bool:
@@ -368,21 +469,24 @@ class SpaceObjectDetectionSystem:
                 
             # Get actual frame rate from capture
             fps = self.cap.get(cv2.CAP_PROP_FPS)
-            if fps <= 0:
-                print("Warning: Invalid frame rate detected, using default 30 fps")
-                fps = 30
+            if fps <= 0 or fps > 120:  # Sanity check
+                fps = 60.0  # Default to 60 fps if invalid
+                print("Could not detect valid FPS from source, defaulting to 60 FPS")
             
             # Update RCNN cycle and video parameters based on actual fps
             #self.detector.set_rcnn_cycle(int(fps))  # Run RCNN once per second
             self.video.set_fps(fps)  # Update video recording fps
             
-            # Get frame dimensions
+            # Get frame dimensions from source (for reference only)
             frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            print(f"Source video dimensions: {frame_width}x{frame_height}")
             
-            # Initialize StreamManager with correct dimensions
+            # Initialize StreamManager with fixed 1920x1080 dimensions for padded output
             if self.stream is None:
-                self.stream = StreamManager(frame_width=frame_width, frame_height=frame_height)
+                # Always use 1920x1080 for stream dimensions to match our padded output
+                self.stream = StreamManager(frame_width=1920, frame_height=1080)
+                print("Stream manager initialized with fixed 1920x1080 dimensions")
             
             print("Successfully connected to video source")
             return True
@@ -393,8 +497,20 @@ class SpaceObjectDetectionSystem:
 
     def _setup_display(self):
         """Set up display windows and callbacks."""
-        cv2.namedWindow('ISS Object Detection')
+        cv2.namedWindow('ISS Object Detection', cv2.WINDOW_NORMAL)
+        # Set a fixed window size to match our 1920x1080 padded output
+        cv2.resizeWindow('ISS Object Detection', 1920, 1080)
         cv2.setMouseCallback('ISS Object Detection', self.display._mouse_callback)
+        
+        # Create a blank initial frame to ensure the window is visible
+        blank_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        # Add text to the blank frame
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(blank_frame, 'Initializing...', (int(1920/2) - 200, int(1080/2)), 
+                    font, 2, (255, 255, 255), 3, cv2.LINE_AA)
+        cv2.imshow('ISS Object Detection', blank_frame)
+        # Force window to update and be visible
+        cv2.waitKey(1)
 
     def process_video_stream(self, source: str, is_youtube: bool = False) -> None:
         """Process video stream from source."""
@@ -408,7 +524,18 @@ class SpaceObjectDetectionSystem:
         # Get the frame rate for timing control
         fps = self.cap.get(cv2.CAP_PROP_FPS)
         if fps <= 0 or fps > 120:  # Sanity check
-            fps = 30.0  # Default to 30 fps if invalid
+            fps = 60.0  # Default to 60 fps if invalid
+            print("Could not detect valid FPS from source, defaulting to 60 FPS")
+            
+        # Update the system FPS
+        self.fps = fps
+            
+        # Set the FPS for the video manager to ensure proper buffer size
+        print(f"Setting video manager FPS to {fps}")
+        self.video.set_fps(fps)
+            
+        # Set the expected FPS in the logger for rate calculations
+        self.logger.set_expected_fps(fps)
             
         # Calculate frame interval in seconds
         frame_interval = 1.0 / fps
@@ -418,12 +545,19 @@ class SpaceObjectDetectionSystem:
         start_time = time.time()
         buffer_level = 0  # Track buffer level to adjust timing
         last_frame_time = start_time
+        last_logger_check = start_time
         
         # Main processing loop
         consecutive_errors = 0
         try:
             while self.is_running:
                 iteration_start = time.time()
+                
+                # Periodically check if logger is still running (every 60 seconds)
+                current_time = time.time()
+                if current_time - last_logger_check > 300:  # Check every 5 minutes
+                    self.logger.ensure_running()
+                    last_logger_check = current_time
                 
                 # Calculate elapsed time and expected frame count
                 elapsed_time = iteration_start - start_time
@@ -450,6 +584,9 @@ class SpaceObjectDetectionSystem:
                         consecutive_errors += 1
                         print(f"Error reading frame ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})")
                         
+                        # Log the iteration with error
+                        self.logger.log_iteration(False, False, f"Error reading frame ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})")
+                        
                         if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                             print("Too many consecutive errors, reconnecting...")
                             if not self._attempt_connection(source, is_youtube):
@@ -466,37 +603,33 @@ class SpaceObjectDetectionSystem:
                     buffer_level = min(10, buffer_level + 1)  # Cap at 10
                     
                     # Process frame
-                    if not self.process_frame(frame):
-                        break
+                    process_result = self.process_frame(frame, self.display.avoid_boxes)
+                    
+                    # Check if we should quit
+                    if process_result is None:
+                        # Error occurred
+                        self.logger.log_iteration(False, False, "Error processing frame")
+                    elif isinstance(process_result, bool) and not process_result:
+                        # Unpack the bool
+                        quit_requested = process_result
+                        
+                        if quit_requested:
+                            print("Quit requested")
+                            break
+                            
+                        # Successful processing with quit info
+                        self.logger.log_iteration(False, False, "Quit requested")
+                    else:
+                        # Successful processing with detection info
+                        self.logger.log_iteration(True, True, "Processed successfully")
                         
                     # Update frame count and timing
                     frame_count += 1
                     last_frame_time = time.time()
-                    
-                    # Periodically reset timing to prevent drift
-                    if frame_count % 300 == 0:  # Every ~5 seconds at 60fps
-                        start_time = time.time()
-                        frame_count = 0
                 
-                # Check for user input (non-blocking)
-                key = cv2.waitKey(5) & 0xFF
-                if key == ord('q'):
-                    print("\nQuitting...")
-                    break
-                elif key == ord('+'):
-                    print("\nStarting burst capture...")
-                    self.burst_remaining = self.BURST_CAPTURE_FRAMES
-                elif key == ord('s'):
-                    self.toggle_streaming()
-                elif key == ord('i'):
-                    # Run streaming troubleshooting
-                    print("\nTroubleshooting key pressed - running diagnostics...")
-                    self.stream.troubleshoot_streaming()
-                elif key == ord('b'):
-                    # Start burst capture
-                    self.capture.start_burst_capture()
-                    print("\nStarted burst capture mode")
-                    
+                # Key handling is now done in process_frame, no need for additional waitKey here
+                # The process_frame method will handle quitting and other key commands
+                
         except Exception as e:
             print(f"Error processing video stream: {str(e)}")
             import traceback
@@ -516,30 +649,52 @@ class SpaceObjectDetectionSystem:
             delattr(self, 'cap')
 
     def cleanup(self) -> None:
-        """Final cleanup of all resources."""
-        self.is_running = False
+        """Clean up resources."""
+        print("Cleaning up resources...")
         
-        # Stop the console
-        if self.console:
-            self.console.stop()
+        try:
+            # Clean up video capture
+            if hasattr(self, 'cap') and self.cap:
+                self.cap.release()
+                
+            # Clean up stream
+            if hasattr(self, 'stream') and self.stream:
+                self.stream.stop_streaming()
+                print("Stream stopped")
+                
+            # Clean up video manager
+            if hasattr(self, 'video') and self.video:
+                self.video.cleanup()
+                print("Video manager cleaned up")
+                
+            # Clean up display
+            if hasattr(self, 'display') and self.display:
+                self.display.cleanup()
+                print("Display cleaned up")
+                
+            # Clean up detector
+            if hasattr(self, 'detector') and self.detector:
+                self.detector.cleanup()
+                print("Detector cleaned up")
+                
+            # Clean up logger
+            if hasattr(self, 'logger') and self.logger:
+                print("Stopping logger...")
+                self.logger.stop()
+                
+            # Clean up console
+            if hasattr(self, 'console') and self.console:
+                print("Stopping parameter console...")
+                self.console.stop()
+                
+            # Destroy all OpenCV windows
+            cv2.destroyAllWindows()
             
-        # Stop the logger
-        if self.logger:
-            self.logger.stop()
-            
-        # Release video capture
-        if hasattr(self, 'cap'):
-            self.cap.release()
-            
-        # Clean up managers
-        self.capture.cleanup()
-        self.video.cleanup()
-        self.display.cleanup()
-        self.detector.cleanup()
-        self.stream.cleanup()  # Add stream cleanup
-        
-        # Destroy windows
-        cv2.destroyAllWindows()
+            print("Cleanup complete")
+        except Exception as e:
+            print(f"Error during cleanup: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def run(self) -> None:
         """Main run loop with mode selection."""
@@ -574,10 +729,13 @@ class SpaceObjectDetectionSystem:
         """Process live feed from camera."""
         print("\nProcessing live feed. Press 'q' to quit.")
         print("Key commands:")
-        print("  1 - Toggle streaming (start/stop)")
+        print("  s/1 - Toggle streaming (start/stop)")
         print("  2 - Run streaming troubleshooting")
         print("  4 - Start burst capture")
         print("  5 - Pause capture for 5 seconds")
+        print("  c - Clear avoid boxes")
+        print("  t - Cycle through test frames (1 second each)")
+        print("  b - Toggle burst capture mode")
         
         # Main processing loop
         while True:
@@ -589,26 +747,22 @@ class SpaceObjectDetectionSystem:
                 continue
                 
             # Process the frame
-            detection_result = self.process_frame(frame)
+            process_result = self.process_frame(frame)
             
-            # Check for key presses - use a shorter wait time for better responsiveness
-            key = cv2.waitKey(5) & 0xFF
-            if key == ord('q'):
+            # Check the result
+            if process_result is None:
+                # Error occurred
+                print("Error processing frame")
+                time.sleep(0.1)
+                continue
+            elif process_result is False:
+                # Quit requested
+                print("Quit requested")
                 break
-            elif key == ord('1'):
-                self.toggle_streaming()
-            elif key == ord('2'):
-                # Run streaming troubleshooting
-                print("\nTroubleshooting key pressed - running diagnostics...")
-                self.stream.troubleshoot_streaming()
-            elif key == ord('4'):
-                # Start burst capture
-                self.capture.start_burst_capture()
-                print("\nStarted burst capture mode")
-            elif key == ord('5'):
-                # Pause capture for 5 seconds
-                self.capture.pause_capture()
-                print("\nPaused capture for 5 seconds")
+            
+            # Key handling is now done in process_frame, no need for additional waitKey here
+            # Additional key handling for specific functions in this mode
+            # Use the key from process_frame result if needed for special functions
 
     def load_test_images(self) -> bool:
         """Load all test images from the Test_Image_Collection directory."""
@@ -647,19 +801,33 @@ class SpaceObjectDetectionSystem:
     def start_test_injection(self, frames: int = 10) -> None:
         """Start test frame injection."""
         if self.test_images:
-            # Set frames to approximately 3 seconds worth of frames (at 60 FPS)
-            self.inject_test_frames = 180  # ~3 seconds at 60 FPS
-            self.frame_display_start = 180  # Track the total frames for percentage calculation
-            print(f"\nStarting test frame injection - each frame will display for ~3 seconds")
+            # Set the number of frames to display each test image
+            if frames == 1:
+                # Just show one frame
+                self.inject_test_frames = 1
+                self.frame_display_start = 1
+            else:
+                # Display each test image for 1 second (at current FPS)
+                frames_per_image = int(self.fps)  # 1 second worth of frames at current FPS
+                self.inject_test_frames = frames_per_image
+                self.frame_display_start = frames_per_image
+            
+            self.current_test_image = 0  # Start from the first image
+            print(f"\nStarting test frame injection - showing test image 1/{len(self.test_images)}")
+            print(f"Each test frame will display for 1 second, then return to main feed after cycle")
         else:
             if self.load_test_images():
                 self.start_test_injection(frames)
-            else:
-                print("No test images available")
 
 def main():
     """Main entry point for the Space Object Detection system."""
     try:
+        # Ensure logs directory exists
+        logs_dir = "./logs"
+        if not os.path.exists(logs_dir):
+            print(f"Creating logs directory: {logs_dir}")
+            os.makedirs(logs_dir, exist_ok=True)
+        
         # Initialize the system
         sod = SpaceObjectDetectionSystem()
         if not sod.initialize():
@@ -679,6 +847,8 @@ def main():
             
     except Exception as e:
         print(f"Error in main: {str(e)}")
+        import traceback
+        traceback.print_exc()
     finally:
         if 'sod' in locals():
             sod.cleanup()
