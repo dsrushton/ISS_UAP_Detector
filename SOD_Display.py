@@ -316,15 +316,7 @@ class DisplayManager:
                                   (x, y - 5),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, ANOMALY_BOX_COLOR, 1)
         
-        # Step 5: Draw avoid boxes in the debug view
-        if self.avoid_boxes:
-            for box in self.avoid_boxes:
-                x1, y1, x2, y2 = box
-                # Draw the avoid box with a distinctive color and pattern
-                cv2.rectangle(self.debug_buffer, (x1, y1), (x2, y2), AVOID_BOX_COLOR, AVOID_BOX_THICKNESS)
-                # Add a label to indicate it's an avoid box
-                cv2.putText(self.debug_buffer, "AVOID", (x1, y1 - 5), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, AVOID_BOX_COLOR, 1)
+        # Avoid boxes are only drawn in the main view, not in debug view
         
         self.logger.log_operation_time('debug_anomalies', time.time() - anomaly_start)
         

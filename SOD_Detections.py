@@ -577,10 +577,6 @@ class SpaceObjectDetector:
                 all_anomalies = []
                 all_metrics = []
                 
-                # Log avoid boxes if present
-                if avoid_boxes and len(avoid_boxes) > 0:
-                    self.logger.log_info(f"Processing with {len(avoid_boxes)} avoid boxes")
-                
                 # Process the main combined space box
                 box_results = self.detect_anomalies(frame, space_boxes, avoid_boxes)
                 
@@ -688,14 +684,19 @@ class SpaceObjectDetector:
         
         # Process predictions
         postprocess_start = time.time()
-        boxes = predictions['boxes'].cpu().numpy().astype(np.int32)
-        labels = predictions['labels'].cpu().numpy()
-        scores = predictions['scores'].cpu().numpy()
+        # Keep tensors on GPU - don't convert to CPU
+        boxes = predictions['boxes']
+        labels = predictions['labels']
+        scores = predictions['scores']
         
         results = {'boxes': {}, 'scores': {}}
         
         # Process all predictions together
-        for box, label, score in zip(boxes, labels, scores):
+        for i in range(len(boxes)):
+            box = boxes[i].tolist()  # Convert individual tensor to list when needed
+            label = labels[i].item()  # Get scalar value from tensor
+            score = scores[i].item()  # Get scalar value from tensor
+            
             class_name = CLASS_NAMES[label]
             threshold = CLASS_THRESHOLDS.get(class_name, 0.5)
             
@@ -709,11 +710,10 @@ class SpaceObjectDetector:
         
         self.logger.log_operation_time('rcnn_postprocess', time.time() - postprocess_start)
         
-        # Clean up GPU memory
+        # We're keeping everything on GPU, so don't explicitly clean up
+        # Just delete Python references to allow garbage collection when needed
         del img_tensor
         del predictions
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
         
         # Log final memory state
         self.logger.log_memory_usage()
@@ -738,9 +738,8 @@ class SpaceObjectDetector:
             self.last_rcnn_frame = self.frame_count
             self.rcnn_queue.task_done()
             
-            # Clean up GPU memory after each batch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            # We're keeping everything on GPU, so don't explicitly clean up
+            # Just delete Python references to allow garbage collection when needed
 
     def set_rcnn_cycle(self, fps: int):
         """Update the RCNN detection cycle based on frame rate."""

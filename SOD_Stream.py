@@ -33,7 +33,7 @@ class StreamManager:
         self.use_software_encoding = False  # Default to hardware encoding
         
         # Create a queue for frames
-        self.frames_queue = queue.Queue(maxsize=120)  # Buffer ~2 seconds at 60fps
+        self.frames_queue = queue.Queue(maxsize=240)  # Buffer ~4 seconds at 60fps
         
         print(f"StreamManager initialized with frame size: {frame_width}x{frame_height}")
     
@@ -66,7 +66,7 @@ class StreamManager:
                     '-f', 'rawvideo',
                     '-pix_fmt', 'bgr24',
                     '-s', f'{self.frame_width}x{self.frame_height}',
-                    '-r', '30',  # Lower frame rate for more stability
+                    '-r', '60',  # Increase to 60fps to match YouTube's recommendation
                     '-i', '-',  # Read from stdin
                     # Add silent audio stream - required by YouTube
                     '-f', 'lavfi',
@@ -76,10 +76,10 @@ class StreamManager:
                     '-c:v', 'h264_nvenc',  # Use NVIDIA hardware encoding
                     '-preset', 'p1',       # Low latency preset
                     '-pix_fmt', 'yuv420p', # Required by YouTube
-                    '-g', '60',            # Keyframe interval (2s at 30fps)
-                    '-b:v', '6000k',       # Higher video bitrate for better quality
-                    '-maxrate', '8000k',   # Higher maximum bitrate
-                    '-bufsize', '12000k',  # Larger buffer size
+                    '-g', '120',           # Keyframe interval (2s at 60fps)
+                    '-b:v', '6800k',       # Match YouTube's recommended bitrate
+                    '-maxrate', '9000k',   # Higher maximum bitrate
+                    '-bufsize', '13600k',  # Larger buffer size (2x bitrate)
                     '-qmin', '0',          # Minimum quantization level (0-51, lower is better quality)
                     '-qmax', '28',         # Maximum quantization level (lower than default for better quality)
                     # Audio encoding
@@ -96,7 +96,7 @@ class StreamManager:
                     '-f', 'rawvideo',
                     '-pix_fmt', 'bgr24',
                     '-s', f'{self.frame_width}x{self.frame_height}',
-                    '-r', '30',  # Lower frame rate for more stability
+                    '-r', '60',  # Increase to 60fps to match YouTube's recommendation
                     '-i', '-',  # Read from stdin
                     # Add silent audio stream - required by YouTube
                     '-f', 'lavfi',
@@ -106,10 +106,10 @@ class StreamManager:
                     '-c:v', 'libx264',     # Software encoding
                     '-preset', 'fast',     # Better quality preset (slower than veryfast)
                     '-pix_fmt', 'yuv420p', # Required by YouTube
-                    '-g', '60',            # Keyframe interval (2s at 30fps)
-                    '-b:v', '6000k',       # Higher video bitrate for better quality
-                    '-maxrate', '8000k',   # Higher maximum bitrate
-                    '-bufsize', '12000k',  # Larger buffer size
+                    '-g', '120',           # Keyframe interval (2s at 60fps)
+                    '-b:v', '6800k',       # Match YouTube's recommended bitrate
+                    '-maxrate', '9000k',   # Higher maximum bitrate
+                    '-bufsize', '13600k',  # Larger buffer size (2x bitrate)
                     '-crf', '18',          # Constant Rate Factor (18-23 is visually lossless, lower is better)
                     # Audio encoding
                     '-c:a', 'aac',
@@ -134,7 +134,7 @@ class StreamManager:
             self.frames_queue = frames_queue
             
             def stream_frames():
-                print("Frame processing thread started")
+                # Initialize counters without printing debug message
                 frames_sent = 0
                 last_report_time = time.time()
                 
@@ -153,7 +153,7 @@ class StreamManager:
                                     
                                     # Report progress periodically
                                     current_time = time.time()
-                                    if current_time - last_report_time >= 5.0:
+                                    if current_time - last_report_time >= 60.0:
                                         elapsed = current_time - self.stream_start_time
                                         fps = frames_sent / elapsed if elapsed > 0 else 0
                                         print(f"Streaming: {frames_sent} frames sent in {elapsed:.1f}s ({fps:.1f} fps)")

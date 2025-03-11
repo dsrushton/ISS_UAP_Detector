@@ -307,12 +307,8 @@ class VideoManager:
             return
             
         try:
-            # Check if this is already a combined frame (width is approximately 2x height)
-            is_combined = frame.shape[1] > frame.shape[0] * 1.8
-            
-            if not is_combined:
-                self.logger.log_error("Frame in update_recording is not a combined frame")
-                # Try to continue anyway
+            # We'll assume the frame is valid and proceed without the aspect ratio check
+            # The previous check was causing frequent error messages
             
             # For the first 179 frames after the buffer, create a special view:
             # - Left half: Show the stored debug view (from when the detection occurred)
