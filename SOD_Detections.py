@@ -35,6 +35,8 @@ class DetectionResults:
         self.metadata = kwargs.get('metadata', {})          # Store anomaly metrics and other metadata
         self.contours = kwargs.get('contours', [])          # Store contours for debug view
         self.frame_number = frame_number                    # Track frame number if provided
+        self.space_mask = kwargs.get('space_mask', None)    # Store the space mask for display
+        self.space_contours = kwargs.get('space_contours', [])  # Store space contours for display
         
     def add_rcnn_detection(self, class_name: str, box: list, score: float):
         """Add an RCNN detection."""
@@ -110,10 +112,23 @@ class SpaceObjectDetector:
             h, w = frame.shape[:2]
             space_mask = np.zeros((h, w), dtype=np.uint8)
             
+            # Ensure space_boxes is a list of boxes, not a single box
+            if not isinstance(space_boxes, list):
+                space_boxes = [space_boxes]
+            
             # Draw all space boxes on the mask
             for box in space_boxes:
                 x1, y1, x2, y2 = map(int, box)
                 cv2.rectangle(space_mask, (x1, y1), (x2, y2), 255, -1)
+            
+            # If we have avoid boxes, remove them from the space mask
+            if avoid_boxes and len(avoid_boxes) > 0:
+                for box in avoid_boxes:
+                    # Check if box is in the correct format (x1, y1, x2, y2)
+                    if len(box) == 4:
+                        x1, y1, x2, y2 = map(int, box)
+                        # Draw the avoid box in black (0) to remove it from the space mask
+                        cv2.rectangle(space_mask, (x1, y1), (x2, y2), 0, -1)
             
             # Find external contour of all space regions combined
             space_contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -121,6 +136,10 @@ class SpaceObjectDetector:
             # Clear mask and redraw only the external contour
             space_mask = np.zeros((h, w), dtype=np.uint8)
             cv2.drawContours(space_mask, space_contours, -1, 255, -1)
+            
+            # Store the space mask and contours in results
+            results.space_mask = space_mask
+            results.space_contours = space_contours
             
             # Get the bounding box of the combined space region
             x1, y1, w1, h1 = cv2.boundingRect(space_mask)
@@ -141,6 +160,34 @@ class SpaceObjectDetector:
                 roi_max = np.max(roi, axis=2)  # Use max RGB value for better detection
             else:
                 roi_max = roi
+            
+            # Create a dark mask to identify black regions within the space box
+            # Check if DARK_REGION_THRESHOLD exists, otherwise use 30 as default
+            try:
+                dark_threshold = const.get_value('DARK_REGION_THRESHOLD')
+            except AttributeError:
+                dark_threshold = 30  # Default value if constant doesn't exist
+                
+            _, dark_mask = cv2.threshold(roi_max, dark_threshold, 255, cv2.THRESH_BINARY_INV)
+            
+            # Apply morphological operations to clean up the dark mask
+            morph_size = const.get_value('MORPH_KERNEL_SIZE')
+            kernel = np.ones((morph_size, morph_size), np.uint8)
+            dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_OPEN, kernel)
+            
+            # Limit dark mask to space region
+            dark_mask = cv2.bitwise_and(dark_mask, roi_mask)
+            
+            # Find contours in the dark mask to identify black regions
+            dark_contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Create a refined space mask that only includes dark regions
+            refined_mask = np.zeros_like(roi_mask)
+            cv2.drawContours(refined_mask, dark_contours, -1, 255, -1)
+            
+            # If no dark regions found, fall back to the original space mask
+            if cv2.countNonZero(refined_mask) < 100:  # Minimum area threshold
+                refined_mask = roi_mask
                 
             # SIMPLIFIED APPROACH: Focus only on bright objects for faster processing
             mask_start = time.time()
@@ -150,12 +197,10 @@ class SpaceObjectDetector:
             # Create only the bright mask - skip dark mask and contrast mask
             _, bright_mask = cv2.threshold(blurred, const.get_value('MIN_OBJECT_BRIGHTNESS'), 255, cv2.THRESH_BINARY)
             
-            # Limit to space region
-            bright_mask = cv2.bitwise_and(bright_mask, roi_mask)
+            # Limit to refined space region (dark areas within space box)
+            bright_mask = cv2.bitwise_and(bright_mask, refined_mask)
             
             # Apply morphological operations
-            morph_size = const.get_value('MORPH_KERNEL_SIZE')
-            kernel = np.ones((morph_size, morph_size), np.uint8)
             bright_mask = cv2.morphologyEx(bright_mask, cv2.MORPH_DILATE, kernel)
             
             self.logger.log_operation_time('mask_creation', time.time() - mask_start)
@@ -532,6 +577,10 @@ class SpaceObjectDetector:
                 all_anomalies = []
                 all_metrics = []
                 
+                # Log avoid boxes if present
+                if avoid_boxes and len(avoid_boxes) > 0:
+                    self.logger.log_info(f"Processing with {len(avoid_boxes)} avoid boxes")
+                
                 # Process the main combined space box
                 box_results = self.detect_anomalies(frame, space_boxes, avoid_boxes)
                 
@@ -544,6 +593,10 @@ class SpaceObjectDetector:
                 # Store contours from the combined box
                 results.contours = box_results.contours
                 
+                # Store space mask and contours from the combined box
+                results.space_mask = box_results.space_mask
+                results.space_contours = box_results.space_contours
+                
                 # Process additional space boxes if they don't overlap with the main one
                 for space_box in space_boxes[1:]:
                     # Check if this box overlaps with the main box
@@ -553,6 +606,7 @@ class SpaceObjectDetector:
                     # If boxes don't overlap, process this one too
                     if (x2 < main_x1 or x1 > main_x2 or 
                         y2 < main_y1 or y1 > main_y2):
+                        # Pass the space box as a list to avoid 'numpy.int32' object is not iterable error
                         box_results = self.detect_anomalies(frame, [space_box], avoid_boxes)
                         if box_results.anomalies:
                             all_anomalies.extend(box_results.anomalies)

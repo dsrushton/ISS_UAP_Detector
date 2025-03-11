@@ -18,7 +18,7 @@ DEFAULT_RTMP_URL = "rtmp://a.rtmp.youtube.com/live2"
 class StreamManager:
     """Manages streaming video to YouTube."""
     
-    def __init__(self, frame_width: int = 1920, frame_height: int = 720):
+    def __init__(self, frame_width: int = 1920, frame_height: int = 1080):
         """Initialize the stream manager with frame dimensions."""
         self.frame_width = frame_width
         self.frame_height = frame_height
@@ -72,7 +72,7 @@ class StreamManager:
                     '-f', 'lavfi',
                     '-i', 'anullsrc=r=44100:cl=mono',
                     # Add padding to maintain aspect ratio - only vertical padding for wider frames
-                    '-vf', 'pad=width=iw:height=1080:x=0:y=(1080-ih)/2:color=black',
+                    '-vf', 'scale=-1:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black',
                     '-c:v', 'h264_nvenc',  # Use NVIDIA hardware encoding
                     '-preset', 'p1',       # Low latency preset
                     '-pix_fmt', 'yuv420p', # Required by YouTube
@@ -102,7 +102,7 @@ class StreamManager:
                     '-f', 'lavfi',
                     '-i', 'anullsrc=r=44100:cl=mono',
                     # Add padding to maintain aspect ratio - only vertical padding for wider frames
-                    '-vf', 'pad=width=iw:height=1080:x=0:y=(1080-ih)/2:color=black',
+                    '-vf', 'scale=-1:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black',
                     '-c:v', 'libx264',     # Software encoding
                     '-preset', 'fast',     # Better quality preset (slower than veryfast)
                     '-pix_fmt', 'yuv420p', # Required by YouTube
@@ -273,60 +273,25 @@ class StreamManager:
             
         # Check if frame dimensions match expected dimensions
         if frame.shape[0] != self.frame_height or frame.shape[1] != self.frame_width:
-            if self.adapt_to_frame_size:
-                # Update the frame dimensions instead of resizing the frame
-                print(f"Updating stream dimensions from {self.frame_width}x{self.frame_height} to {frame.shape[1]}x{frame.shape[0]}")
-                self.frame_width = frame.shape[1]
-                self.frame_height = frame.shape[0]
+            # Only log a warning every 300 frames to avoid spam
+            if self.frames_sent % 300 == 0:
+                print(f"Warning: Frame dimensions ({frame.shape[1]}x{frame.shape[0]}) don't match expected dimensions ({self.frame_width}x{self.frame_height})")
+                print("Frame will be resized to match expected dimensions")
                 
-                # If FFmpeg process is running, we need to stop and restart it with new dimensions
-                if self.ffmpeg_process and self.ffmpeg_process.poll() is None:
-                    print("Restarting FFmpeg process with new dimensions...")
-                    self.stop_streaming()
-                    
-                    # Create a new queue with the updated dimensions
-                    temp_queue = queue.Queue(maxsize=120)  # Buffer ~2 seconds at 60fps
-                    
-                    # Start streaming with the new dimensions
-                    self.start_streaming(temp_queue)
-                    
-                    # If restart failed, return False
-                    if not self.is_streaming:
-                        return False
-            else:
-                # Log a warning but don't resize the frame - send as is
-                if self.frames_sent % 300 == 0:  # Only log periodically to avoid spam
-                    print(f"Warning: Frame dimensions ({frame.shape[1]}x{frame.shape[0]}) don't match expected dimensions ({self.frame_width}x{self.frame_height})")
-                    print("Frame will be sent as-is without resizing")
+            # Resize the frame to match expected dimensions
+            frame = cv2.resize(frame, (self.frame_width, self.frame_height))
         
-        # Check if FFmpeg process is still running
-        if self.ffmpeg_process and self.ffmpeg_process.poll() is not None:
-            print(f"FFmpeg process terminated unexpectedly with return code: {self.ffmpeg_process.returncode}")
-            self.is_streaming = False
-            return False
-            
         try:
-            # Add the frame to the queue, with a timeout to avoid blocking indefinitely
-            self.frames_queue.put(frame.copy(), timeout=0.5)
+            # Add frame to queue, with a timeout to avoid blocking indefinitely
+            self.frames_queue.put(frame, timeout=0.1)
             self.frames_sent += 1
-            
-            # Log progress periodically
-            if self.frames_sent % 300 == 0:  # Log every ~5 seconds at 60fps
-                duration = time.time() - self.stream_start_time
-                fps = self.frames_sent / duration if duration > 0 else 0
-                print(f"Streaming: {self.frames_sent} frames sent in {duration:.1f}s ({fps:.1f} fps)")
-                
             return True
         except queue.Full:
-            print("Warning: Streaming queue is full, frame dropped")
-            return False
-        except BrokenPipeError as e:
-            print(f"Error: Broken pipe detected - {str(e)}")
-            # Mark streaming as stopped since the pipe is broken
-            self.is_streaming = False
+            # Queue is full, which means streaming is falling behind
+            # This is normal during high CPU load
             return False
         except Exception as e:
-            print(f"Error adding frame to queue: {str(e)}")
+            print(f"Error adding frame to stream queue: {str(e)}")
             return False
             
     def cleanup(self) -> None:

@@ -19,6 +19,8 @@ class DisplayManager:
     """Manages visualization of detection results and debug information."""
     
     def __init__(self):
+        """Initialize the display manager."""
+        # Initialize state variables
         self.debug_view = None
         self.last_save_time = 0
         self.logger = None
@@ -39,6 +41,9 @@ class DisplayManager:
         self.avoid_start_pos = None
         self.current_avoid_box = None
         
+        # Update window title
+        self._update_window_title()
+        
         # Set up mouse callback
         cv2.namedWindow('ISS Object Detection')
         cv2.setMouseCallback('ISS Object Detection', self._mouse_callback)
@@ -58,8 +63,8 @@ class DisplayManager:
 
     def _set_window_size(self):
         """Set the window to the correct size."""
-        # Combined view size is always 939*2 x 720
-        cv2.resizeWindow('ISS Object Detection', 939*2, 720)
+        # Use 1920x1080 for the window size to match our padded output
+        cv2.resizeWindow('ISS Object Detection', 1920, 1080)
         # Force window size to be maintained
         cv2.waitKey(1)  # This helps ensure the resize takes effect
 
@@ -70,15 +75,46 @@ class DisplayManager:
         else:
             title = "ISS Object Detection"  # Normal title
         cv2.setWindowTitle('ISS Object Detection', title)
-        # Ensure window size is maintained
-        self._set_window_size()
+        # We don't need to reset the window size every time the title changes
+        # This was causing the window to resize when streaming starts
 
     def _mouse_callback(self, event, x, y, flags, param):
         """Handle mouse events for avoid box drawing."""
+        # Check if we have padding offsets defined
+        has_padding = hasattr(self, 'x_padding_offset') and hasattr(self, 'y_padding_offset')
+        
+        # Determine if the click is in the main view (right side)
+        # The combined view has the debug view on the left and the main view on the right
+        # We need to account for padding if it exists
+        debug_width = CROPPED_WIDTH  # Width of debug view (939 pixels)
+        
+        if has_padding:
+            # If we have padding, we need to check if the click is within the actual main view area
+            # The main view starts at x_padding_offset + debug_width
+            main_view_start = self.x_padding_offset + debug_width
+            
+            # Check if click is in the main view area
+            if x < main_view_start or x >= main_view_start + debug_width:
+                # Click is outside the main view area
+                return
+                
+            # Adjust coordinates to be relative to the main view (removing padding)
+            main_x = x - main_view_start
+            main_y = y - self.y_padding_offset
+        else:
+            # No padding, use the simple check
+            if x < debug_width:
+                # Ignore clicks in the left half (debug view)
+                return
+                
+            # Adjust x coordinate to be relative to the main view
+            main_x = x - debug_width
+            main_y = y
+            
         if event == cv2.EVENT_LBUTTONDOWN:
             # Start drawing avoid box
             self.drawing_avoid_box = True
-            self.avoid_start_pos = (x, y)
+            self.avoid_start_pos = (main_x, main_y)  # Store coordinates relative to main view
             self.current_avoid_box = None
             
         elif event == cv2.EVENT_MOUSEMOVE:
@@ -86,39 +122,56 @@ class DisplayManager:
             if self.drawing_avoid_box:
                 self.current_avoid_box = (
                     self.avoid_start_pos[0], self.avoid_start_pos[1],
-                    x - self.avoid_start_pos[0], y - self.avoid_start_pos[1]
+                    main_x - self.avoid_start_pos[0], main_y - self.avoid_start_pos[1]
                 )
                 
         elif event == cv2.EVENT_LBUTTONUP:
             # Finish drawing avoid box
             if self.drawing_avoid_box:
                 self.drawing_avoid_box = False
-                if self.avoid_start_pos and abs(x - self.avoid_start_pos[0]) > 5 and abs(y - self.avoid_start_pos[1]) > 5:
+                if self.avoid_start_pos and abs(main_x - self.avoid_start_pos[0]) > 5 and abs(main_y - self.avoid_start_pos[1]) > 5:
                     # Convert to x1,y1,x2,y2 format and ensure positive width/height
-                    x1 = min(self.avoid_start_pos[0], x)
-                    y1 = min(self.avoid_start_pos[1], y)
-                    x2 = max(self.avoid_start_pos[0], x)
-                    y2 = max(self.avoid_start_pos[1], y)
+                    x1 = min(self.avoid_start_pos[0], main_x)
+                    y1 = min(self.avoid_start_pos[1], main_y)
+                    x2 = max(self.avoid_start_pos[0], main_x)
+                    y2 = max(self.avoid_start_pos[1], main_y)
                     self.avoid_boxes.append((x1, y1, x2, y2))
+                    print(f"Added avoid box: ({x1}, {y1}, {x2}, {y2})")
                 self.current_avoid_box = None
                 self.avoid_start_pos = None
 
     def _compute_space_mask_and_contours(self, boxes: list, frame: np.ndarray) -> tuple:
         """Compute space mask and contours for visualization."""
+        # Check if we have cached results for the same boxes and frame shape
+        if (hasattr(self, 'last_space_boxes') and 
+            self.last_space_boxes is not None and
+            boxes is not None and
+            len(self.last_space_boxes) == len(boxes) and
+            all(np.array_equal(a, b) for a, b in zip(self.last_space_boxes, boxes)) and
+            hasattr(self, 'last_frame_shape') and 
+            self.last_frame_shape == frame.shape[:2] and
+            self.last_space_mask is not None and 
+            self.last_space_contours is not None):
+            return self.last_space_mask, self.last_space_contours
+            
         # Create a mask for all space regions
         h, w = frame.shape[:2]
         space_mask = np.zeros((h, w), dtype=np.uint8)
         
-        # Draw all space boxes on the mask
+        # Draw all space boxes on the mask - use a more efficient approach
         for box in boxes:
-            x1, y1, x2, y2 = box
-            cv2.rectangle(space_mask, (x1, y1), (x2, y2), 255, -1)
+            x1, y1, x2, y2 = map(int, box)
+            space_mask[y1:y2, x1:x2] = 255  # Faster than cv2.rectangle for filled rectangles
         
         # Find contours of space regions
         space_contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Return mask and contours directly without computing dark mask
-        # This improves performance by skipping unnecessary processing
+        # Cache the results
+        self.last_space_boxes = [np.array(box) for box in boxes] if boxes else None
+        self.last_frame_shape = frame.shape[:2]
+        self.last_space_mask = space_mask
+        self.last_space_contours = space_contours
+        
         return space_mask, space_contours
 
     def _clear_cached_computations(self):
@@ -131,18 +184,61 @@ class DisplayManager:
         """Ensure debug buffers are allocated with correct dimensions."""
         h, w = frame_shape[:2]
         
+        # Only allocate new buffers if dimensions have changed
         if (self.debug_buffer is None or 
             self.debug_buffer.shape[0] != h or 
             self.debug_buffer.shape[1] != w):
+            
+            # Check if we need to print allocation message
+            is_new_allocation = self.debug_buffer is None
+            
+            # Allocate new buffers
             self.debug_buffer = np.zeros((h, w, 3), dtype=np.uint8)
             self.debug_mask_3ch = np.zeros((h, w, 3), dtype=np.uint8)
-            print(f"Debug buffers allocated with shape {self.debug_buffer.shape}")
+            
+            # Only print message for first allocation, not for resizing
+            if is_new_allocation:
+                print(f"Debug buffers allocated with shape {self.debug_buffer.shape}")
 
     def create_debug_view(self, frame: np.ndarray, space_data: list) -> np.ndarray:
         """Create debug visualization using the same structure as main view."""
         if not DEBUG_VIEW_ENABLED or not space_data:
             return np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8)
             
+        debug_start = time.time()
+        
+        # Get data from first entry
+        boxes, contours, anomalies, metadata, space_mask, space_contours = space_data[0]
+        
+        # Generate a simple hash of the frame for comparison
+        # Use the sum of a downsampled version of the frame for efficiency
+        frame_hash = None
+        if frame is not None:
+            # Downsample the frame to 32x32 for faster hashing
+            small_frame = cv2.resize(frame, (32, 32))
+            frame_hash = small_frame.sum()
+        
+        # Check if we can reuse the previous debug view
+        # This is safe if the frame, space mask, contours, and anomalies are the same
+        if (hasattr(self, 'last_debug_frame_hash') and 
+            frame_hash is not None and
+            self.last_debug_frame_hash == frame_hash and
+            hasattr(self, 'last_debug_view') and 
+            self.last_debug_view is not None and
+            hasattr(self, 'last_debug_space_mask') and 
+            space_mask is not None and 
+            self.last_debug_space_mask is not None and
+            np.array_equal(self.last_debug_space_mask, space_mask) and
+            hasattr(self, 'last_debug_anomalies') and 
+            self.last_debug_anomalies is not None and
+            anomalies is not None and
+            len(self.last_debug_anomalies) == len(anomalies) and
+            all(np.array_equal(np.array(a), np.array(b)) for a, b in zip(self.last_debug_anomalies, anomalies))):
+            
+            # We can reuse the previous debug view
+            self.logger.log_operation_time('debug_view', time.time() - debug_start)
+            return self.last_debug_view.copy()
+        
         # Ensure buffers are allocated
         self._ensure_debug_buffers(frame.shape)
         
@@ -150,54 +246,94 @@ class DisplayManager:
         copy_start = time.time()
         self.debug_buffer.fill(0)
         
-        # Get raw boxes from first entry
-        boxes, contours, anomalies, metadata = space_data[0]
+        # Use the space mask from detection results if available, otherwise compute it
+        if space_mask is None:
+            # Fallback to computing space mask if not provided
+            space_mask, space_contours = self._compute_space_mask_and_contours(boxes, frame)
         
-        # Use shared computation for space mask and contours, passing the frame
-        space_mask, space_contours = self._compute_space_mask_and_contours(boxes, frame)
+        # Create 3-channel mask for copying - reuse existing buffer if possible
+        if self.debug_mask_3ch is None or self.debug_mask_3ch.shape != (space_mask.shape[0], space_mask.shape[1], 3):
+            self.debug_mask_3ch = cv2.merge([space_mask, space_mask, space_mask])
+        else:
+            # Reuse existing buffer - faster than cv2.merge
+            self.debug_mask_3ch[:,:,0] = space_mask
+            self.debug_mask_3ch[:,:,1] = space_mask
+            self.debug_mask_3ch[:,:,2] = space_mask
         
-        # Create 3-channel mask for copying
-        self.debug_mask_3ch = cv2.merge([space_mask, space_mask, space_mask])
-        
-        # Copy frame content for space regions (faster than np.where)
+        # Step 1: Copy raw frame content for space regions (faster than np.where)
         np.copyto(self.debug_buffer, frame, where=(self.debug_mask_3ch > 0))
         self.logger.log_operation_time('debug_frame_copy', time.time() - copy_start)
         
         space_start = time.time()
-        # Draw only the external space contours in blue
-        for i, contour in enumerate(space_contours):
-            if i < len(boxes):  # Only draw external space contours
-                color = CLASS_COLORS['space']  # Blue for space
-                cv2.drawContours(self.debug_buffer, [contour], -1, color, 2)
+        # Step 2: Draw the space region outline (blue)
+        cv2.drawContours(self.debug_buffer, space_contours, -1, CLASS_COLORS['space'], 2)
         
-        # Remove the dark mask overlay to improve performance
+        # Step 2.5: Draw the space bounding boxes from RCNN detections
+        if boxes and len(boxes) > 0:
+            for box in boxes:
+                x1, y1, x2, y2 = map(int, box)
+                # Draw the space box rectangle with a different color or style to distinguish from contours
+                cv2.rectangle(self.debug_buffer, (x1, y1), (x2, y2), (255, 165, 0), 2)  # Orange color
+        
         self.logger.log_operation_time('debug_space_box', time.time() - space_start)
         
         anomaly_start = time.time()
-        # Draw detection contours - these are already in absolute coordinates
-        if contours is not None:
-            # Draw each contour directly - they're already in global coordinates
-            cv2.drawContours(self.debug_buffer, contours, -1, CONTOUR_COLOR, 1)
-        self.logger.log_operation_time('debug_contours', time.time() - anomaly_start)
+        # Step 3: Draw detection contours directly on the debug buffer, but only within the space mask
+        if contours is not None and len(contours) > 0:
+            # Skip creating a new mask - use the existing space_mask directly
+            for contour in contours:
+                # Check if contour is within the space mask - use a faster approach
+                # Get bounding rect of contour
+                x, y, w, h = cv2.boundingRect(contour)
+                # Check if the bounding rect overlaps with space mask
+                roi = space_mask[y:y+h, x:x+w]
+                if roi.size > 0 and np.any(roi > 0):
+                    # Draw the contour with a more visible color and thickness
+                    cv2.drawContours(self.debug_buffer, [contour], -1, CONTOUR_COLOR, 2)  # Increased thickness to 2
         
-        anomaly_start = time.time()
-        # Draw anomaly boxes and metrics
-        if anomalies is not None and metadata is not None and 'anomaly_metrics' in metadata:
+        # Step 4: Draw anomaly boxes and metrics
+        if anomalies is not None and len(anomalies) > 0:
+            # Make sure anomaly boxes are drawn with high visibility
             for anomaly_idx, (x, y, w, h) in enumerate(anomalies):
-                # Draw rectangle with a small padding
+                # Draw rectangle with a small padding and increased thickness
                 cv2.rectangle(self.debug_buffer, 
                             (x - 2, y - 2),
                             (x + w + 2, y + h + 2),
-                            ANOMALY_BOX_COLOR, 2)
+                            ANOMALY_BOX_COLOR, 3)  # Increased thickness to 3
                 
-                if anomaly_idx < len(metadata['anomaly_metrics']):
+                # Add metrics text if available
+                if metadata is not None and 'anomaly_metrics' in metadata and anomaly_idx < len(metadata['anomaly_metrics']):
                     metric = metadata['anomaly_metrics'][anomaly_idx]
                     if isinstance(metric, dict) and 'obj_brightness' in metric and 'contrast' in metric:
                         text = f"B:{metric['obj_brightness']:.1f} C:{metric['contrast']:.1f}"
+                        # Draw text with better visibility
+                        # First draw a black outline
+                        for dx, dy in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+                            cv2.putText(self.debug_buffer, text, 
+                                      (x + dx, y - 5 + dy),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                        # Then draw the text in the anomaly color
                         cv2.putText(self.debug_buffer, text, 
                                   (x, y - 5),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.4, ANOMALY_BOX_COLOR, 1)
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, ANOMALY_BOX_COLOR, 1)
+        
+        # Step 5: Draw avoid boxes in the debug view
+        if self.avoid_boxes:
+            for box in self.avoid_boxes:
+                x1, y1, x2, y2 = box
+                # Draw the avoid box with a distinctive color and pattern
+                cv2.rectangle(self.debug_buffer, (x1, y1), (x2, y2), AVOID_BOX_COLOR, AVOID_BOX_THICKNESS)
+                # Add a label to indicate it's an avoid box
+                cv2.putText(self.debug_buffer, "AVOID", (x1, y1 - 5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, AVOID_BOX_COLOR, 1)
+        
         self.logger.log_operation_time('debug_anomalies', time.time() - anomaly_start)
+        
+        # Cache the current debug view and its inputs for potential reuse
+        self.last_debug_view = self.debug_buffer.copy()
+        self.last_debug_space_mask = space_mask.copy() if space_mask is not None else None
+        self.last_debug_anomalies = [np.array(a) for a in anomalies] if anomalies is not None else None
+        self.last_debug_frame_hash = frame_hash
         
         return self.debug_buffer
 
@@ -205,6 +341,9 @@ class DisplayManager:
         """Draw detection boxes and labels on frame."""
         # Clear cached computations at start of new frame
         self._clear_cached_computations()
+        
+        # Store the latest detections for use in other methods
+        self.latest_detections = detections
         
         # Create a copy of the frame for annotations
         annotated_frame = frame.copy()
@@ -224,13 +363,14 @@ class DisplayManager:
                     color = CLASS_COLORS[class_name]
                     scores = detections.rcnn_scores[class_name]
                     
-                    # Use shared computation for space mask and contours, passing the frame
-                    mask, contours = self._compute_space_mask_and_contours(boxes, frame)
-                    
                     # Draw labels for each box
                     for i, box in enumerate(boxes):
                         if i < len(scores):  # Ensure we have a matching score
-                            x1, y1 = map(int, box[:2])
+                            x1, y1, x2, y2 = map(int, box)
+                            # Draw the space box rectangle
+                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                            
+                            # Draw the label
                             label_text = f"{class_name}: {scores[i]:.2f}"
                             font = cv2.FONT_HERSHEY_SIMPLEX
                             font_scale = 0.5
@@ -238,12 +378,6 @@ class DisplayManager:
                             text_y = y1 + 20
                             text_x = x1 + 5
                             cv2.putText(annotated_frame, label_text, (text_x, text_y), font, font_scale, color, thickness)
-                    
-                    # Draw only the external space contours (blue)
-                    # The first len(boxes) contours are the external space contours
-                    for i, contour in enumerate(contours):
-                        if i < len(boxes):  # Only draw external space contours
-                            cv2.drawContours(annotated_frame, [contour], -1, color, 2)
                 continue
                 
             scores = detections.rcnn_scores[class_name]
@@ -253,32 +387,17 @@ class DisplayManager:
                 x1, y1, x2, y2 = map(int, box)
                 cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
                 
-                # Prepare label
+                # Use the same simple label style as space class
                 label_text = f"{class_name}: {score:.2f}"
                 font = cv2.FONT_HERSHEY_SIMPLEX
                 font_scale = 0.5
                 thickness = 1
-                (text_width, text_height), _ = cv2.getTextSize(
-                    label_text, font, font_scale, thickness
-                )
                 
-                # Position label
-                if class_name == 'lf':
-                    text_y = y1 - 5  # Above the box
-                else:
-                    text_y = y1 + text_height + 5  # Below the box
+                # Position label consistently
+                text_y = y1 + 20  # Same position as space labels
                 text_x = x1 + 5
                 
-                # Draw label background
-                cv2.rectangle(
-                    annotated_frame,
-                    (text_x - 2, text_y - text_height - 2),
-                    (text_x + text_width + 2, text_y + 2),
-                    (0, 0, 0),
-                    -1
-                )
-                
-                # Draw label text
+                # Draw label text directly without background
                 cv2.putText(
                     annotated_frame,
                     label_text,
@@ -288,6 +407,13 @@ class DisplayManager:
                     color,
                     thickness
                 )
+        
+        # DO NOT draw anomaly boxes (contour detections) in the main view
+        # These will only be shown in the debug view
+        # The following code is commented out to prevent drawing contour detection boxes
+        # for box in detections.anomalies:
+        #     x, y, w, h = map(int, box)
+        #     cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), ANOMALY_BOX_COLOR, 2)
         
         # Draw avoid boxes
         if self.avoid_boxes:
@@ -363,40 +489,246 @@ class DisplayManager:
         return frame
 
     def create_combined_view(self, frame: np.ndarray, debug: np.ndarray) -> np.ndarray:
-        """Create combined view with debug information."""
-        # Always create a combined frame with fixed size
-        combined = np.zeros((720, 939*2, 3), dtype=np.uint8)
+        """
+        Create a combined view with debug view on left and main view on right.
         
-        # If no debug view, create a black placeholder
-        if debug is None:
-            debug = np.zeros((720, 939, 3), dtype=np.uint8)
-            # Add a placeholder text
-            text = "No Space Detection"
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 1.0
-            thickness = 2
-            (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, thickness)
-            text_x = (939 - text_width) // 2
-            text_y = (720 + text_height) // 2
-            cv2.putText(debug, text, (text_x, text_y), font, font_scale, (128, 128, 128), thickness)
+        Args:
+            frame: The main view frame (annotated with detections)
+            debug: The debug view frame
+            
+        Returns:
+            Combined view with debug on left, main view on right
+        """
+        try:
+            combined_start = time.time()
+            
+            # Validate inputs
+            if frame is None:
+                self.logger.log_error("create_combined_view received None for frame")
+                return None
+                
+            # If no debug view, just return the frame
+            if debug is None:
+                return self._pad_to_1920x1080(frame)
+                
+            # Get frame dimensions
+            frame_h, frame_w = frame.shape[:2]
+            debug_h, debug_w = debug.shape[:2]
+            
+            # Ensure debug view is the same height as frame
+            if debug_h != frame_h:
+                # Resize debug view to match frame height
+                debug = cv2.resize(debug, (int(debug_w * frame_h / debug_h), frame_h))
+                debug_h, debug_w = debug.shape[:2]
+                
+            # Create combined view buffer if needed
+            if not hasattr(self, 'combined_buffer') or self.combined_buffer is None or self.combined_buffer.shape[:2] != (frame_h, frame_w + debug_w):
+                self.combined_buffer = np.zeros((frame_h, frame_w + debug_w, 3), dtype=np.uint8)
+                
+            # Store dimensions for padding calculations
+            self.x_padding_offset = (1920 - (frame_w + debug_w)) // 2
+            self.y_padding_offset = (1080 - frame_h) // 2
+                
+            # Copy debug view to left side
+            self.combined_buffer[:, :debug_w] = debug
+            
+            # Copy frame to right side
+            self.combined_buffer[:, debug_w:] = frame
+            
+            # Draw streaming indicator (red circle) if streaming
+            if self.is_streaming:
+                # Always show the streaming indicator when streaming is active
+                cv2.circle(self.combined_buffer, (frame_w + debug_w - 30, 30), 15, (0, 0, 255), -1)
+                
+            # Pad the combined buffer to 1920x1080
+            padded_combined = self._pad_to_1920x1080(self.combined_buffer)
+            
+            # Only draw avoid box if actively drawing to save processing time
+            if self.drawing_avoid_box and self.current_avoid_box:
+                x, y, w, h = self.current_avoid_box
+                
+                # Draw on the right half (main view) with adjusted coordinates
+                cv2.rectangle(padded_combined, 
+                             (x + 939 + self.x_padding_offset, y + self.y_padding_offset), 
+                             (x + w + 939 + self.x_padding_offset, y + h + self.y_padding_offset), 
+                             AVOID_BOX_COLOR, AVOID_BOX_THICKNESS)
+            
+            # Skip drawing space boxes on padded frame when streaming to save processing time
+            if not self.is_streaming and hasattr(self, 'latest_detections') and self.latest_detections is not None:
+                self.draw_space_boxes_on_padded(padded_combined, self.latest_detections)
+                
+            self.logger.log_operation_time('combined_view', time.time() - combined_start)
+            return padded_combined
+            
+        except Exception as e:
+            self.logger.log_error(f"Error in create_combined_view: {str(e)}")
+            
+            # Try to return just the frame if possible
+            try:
+                if frame is not None:
+                    return self._pad_to_1920x1080(frame)
+            except:
+                pass
+                
+            # Last resort - return a black frame of the right size
+            try:
+                return np.zeros((1080, 1920, 3), dtype=np.uint8)
+            except:
+                return None
+                
+    def _pad_to_1920x1080(self, frame: np.ndarray) -> np.ndarray:
+        """
+        Pad the frame with black bars to achieve 1920x1080 resolution.
+        This preserves the original aspect ratio without distortion.
+        """
+        try:
+            if frame is None:
+                self.logger.log_error("_pad_to_1920x1080 received None for frame")
+                return np.zeros((1080, 1920, 3), dtype=np.uint8)
+                
+            h, w = frame.shape[:2]
+            
+            # Create a black canvas of 1920x1080 - reuse buffer if possible
+            if not hasattr(self, 'padded_buffer') or self.padded_buffer is None or self.padded_buffer.shape != (1080, 1920, 3):
+                self.padded_buffer = np.zeros((1080, 1920, 3), dtype=np.uint8)
+            else:
+                # Clear the buffer instead of creating a new one
+                self.padded_buffer.fill(0)
+            
+            # Calculate centering offsets
+            x_offset = (1920 - w) // 2
+            y_offset = (1080 - h) // 2
+            
+            # Store offsets for later use
+            self.x_padding_offset = x_offset
+            self.y_padding_offset = y_offset
+            
+            # Copy the frame to the center of the canvas
+            self.padded_buffer[y_offset:y_offset+h, x_offset:x_offset+w] = frame
+            
+            return self.padded_buffer
+            
+        except Exception as e:
+            self.logger.log_error(f"Error in _pad_to_1920x1080: {str(e)}")
+                
+            # Last resort - return a black frame of the right size
+            try:
+                return np.zeros((1080, 1920, 3), dtype=np.uint8)
+            except:
+                return None
+
+    def pad_for_streaming(self, combined_frame: np.ndarray) -> np.ndarray:
+        """
+        Pad the combined frame with black bars to achieve 1920x1080 resolution for streaming.
+        This preserves the original aspect ratio without distortion.
         
-        # Add debug view on left
-        combined[0:720, 0:939] = debug
+        Args:
+            combined_frame: The original combined frame (typically 720x1878)
+            
+        Returns:
+            np.ndarray: Padded frame with 1920x1080 resolution
+        """
+        if combined_frame is None:
+            return np.zeros((1080, 1920, 3), dtype=np.uint8)
+            
+        # Get original dimensions
+        h, w = combined_frame.shape[:2]
         
-        # Add main frame on right
-        combined[0:720, 939:] = frame
+        # Create a black canvas of 1920x1080
+        padded_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         
-        # Add streaming indicator
-        if self.is_streaming:
-            # Red circle for streaming
-            cv2.circle(combined, (30, 30), 15, (0, 0, 255), -1)  # Filled red circle
-            cv2.putText(combined, "LIVE", (50, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        # Calculate centering offsets
+        x_offset = max(0, (1920 - w) // 2)
+        y_offset = max(0, (1080 - h) // 2)
+        
+        # If the combined frame is larger than 1920x1080 in any dimension,
+        # we need to scale it down while preserving aspect ratio
+        if w > 1920 or h > 1080:
+            # Calculate scaling factor
+            scale = min(1920 / w, 1080 / h)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            
+            # Resize the frame
+            resized_frame = cv2.resize(combined_frame, (new_w, new_h))
+            
+            # Recalculate centering offsets
+            x_offset = (1920 - new_w) // 2
+            y_offset = (1080 - new_h) // 2
+            
+            # Place the resized frame on the black canvas
+            padded_frame[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized_frame
         else:
-            # Yellow circle for not streaming
-            cv2.circle(combined, (30, 30), 15, (0, 255, 255), -1)  # Filled yellow circle
+            # Place the original frame on the black canvas
+            padded_frame[y_offset:y_offset+h, x_offset:x_offset+w] = combined_frame
+            
+        return padded_frame
+
+    def update_stream(self, combined_frame: np.ndarray) -> None:
+        """Update the RTMP stream with the latest frame."""
+        if not self.is_streaming or self.stream_writer is None:
+            return
+            
+        stream_start = time.time()
         
-        return combined
+        try:
+            # Use padding instead of resizing to maintain aspect ratio
+            padded_frame = self.pad_for_streaming(combined_frame)
+            
+            # Write the padded frame to the stream
+            self.stream_writer.write(padded_frame)
+            
+            self.logger.log_operation_time('stream_write', time.time() - stream_start)
+        except Exception as e:
+            self.logger.log_error(f"Error updating stream: {str(e)}")
 
     def cleanup(self):
         """Clean up any display resources."""
         cv2.destroyAllWindows()
+
+    def draw_space_boxes_on_padded(self, padded_frame: np.ndarray, detections: DetectionResults) -> None:
+        """
+        Draw space boxes on the padded frame with adjusted coordinates.
+        This ensures space boxes are visible on the 1920x1080 padded frame.
+        """
+        if not hasattr(self, 'x_padding_offset') or not hasattr(self, 'y_padding_offset'):
+            return
+            
+        # Check if we have space boxes
+        if 'space' not in detections.rcnn_boxes or not detections.rcnn_boxes['space']:
+            return
+            
+        boxes = detections.rcnn_boxes['space']
+        color = CLASS_COLORS['space']
+        
+        # Draw space contours on the padded frame
+        if hasattr(detections, 'space_contours') and detections.space_contours:
+            # Adjust contours for padding
+            adjusted_contours = []
+            for contour in detections.space_contours:
+                # Create a copy of the contour
+                adjusted_contour = contour.copy()
+                # Adjust x and y coordinates
+                adjusted_contour[:, :, 0] += self.x_padding_offset + 939  # Add offset and shift to right half
+                adjusted_contour[:, :, 1] += self.y_padding_offset
+                adjusted_contours.append(adjusted_contour)
+                
+            # Draw the adjusted contours
+            cv2.drawContours(padded_frame, adjusted_contours, -1, color, 2)
+            
+        # Draw space box labels
+        scores = detections.rcnn_scores['space']
+        for i, box in enumerate(boxes):
+            if i < len(scores):
+                x1, y1 = map(int, box[:2])
+                # Adjust coordinates for padding
+                x1 += self.x_padding_offset + 939  # Add offset and shift to right half
+                y1 += self.y_padding_offset
+                
+                label_text = f"space: {scores[i]:.2f}"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.5
+                thickness = 1
+                text_y = y1 + 20
+                text_x = x1 + 5
+                cv2.putText(padded_frame, label_text, (text_x, text_y), font, font_scale, color, thickness)
