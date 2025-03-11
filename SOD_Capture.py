@@ -36,6 +36,12 @@ class CaptureManager:
         self.current_jpg_suffix = 'a'
         self.last_save_time = 0
         
+        # Initialize pause timer
+        self.pause_until = 0  # Not paused by default
+        
+        # Initialize burst capture counter
+        self.burst_remaining = 0
+        
         # Setup save queue and worker thread
         self.save_queue = queue.Queue()
         self.save_thread = None
@@ -72,6 +78,9 @@ class CaptureManager:
 
     def _save_worker(self):
         """Worker thread for handling frame saves."""
+        # Keep track of files we've already saved
+        saved_files = set()
+        
         while self.is_running:
             try:
                 # Get save data from queue
@@ -80,8 +89,22 @@ class CaptureManager:
                     break
                     
                 image, save_path = save_data
-                cv2.imwrite(save_path, image)
-                print(f"Saved frame to {save_path}")
+                print(f"DEBUG: Attempting to save to {save_path}")
+                
+                # Check if we've already saved this file
+                if save_path in saved_files:
+                    print(f"WARNING: Already saved {save_path}, skipping duplicate")
+                    self.save_queue.task_done()
+                    continue
+                
+                # Save the image
+                success = cv2.imwrite(save_path, image)
+                
+                if success:
+                    print(f"Saved frame to {save_path}")
+                    saved_files.add(save_path)
+                else:
+                    print(f"Failed to save frame to {save_path}")
                 
                 self.save_queue.task_done()
                 
@@ -112,17 +135,21 @@ class CaptureManager:
         Returns:
             str: Filename to use, or None if should not save yet
         """
-        if self.current_video_number is None:
-            return f"unmatched_{int(time.time())}.jpg"
-            
         current_time = time.time()
+        
+        # Check if we should save based on interval
         if check_interval and current_time - self.last_save_time < SAVE_INTERVAL:
             return None
             
-        filename = f"{self.current_video_number:05d}-{self.current_jpg_suffix}.jpg"
-        self.current_jpg_suffix = chr(ord(self.current_jpg_suffix) + 1)
-        self.last_save_time = current_time
-        return filename
+        # If we have a video number, use the proper naming convention
+        if self.current_video_number is not None:
+            filename = f"{self.current_video_number:05d}-{self.current_jpg_suffix}.jpg"
+            self.current_jpg_suffix = chr(ord(self.current_jpg_suffix) + 1)
+            self.last_save_time = current_time
+            return filename
+        else:
+            # If no video number, don't save the frame
+            return None
 
     def save_detection(self, frame: np.ndarray, debug_view: np.ndarray = None, filename: str = None, check_interval: bool = True) -> None:
         """
@@ -141,24 +168,36 @@ class CaptureManager:
                 if filename is None:  # Too soon to save
                     return
             
+            print(f"DEBUG: save_detection called with filename: {filename}")
+            
+            # Skip save if debug_view is None (no contour bounding boxes drawn)
+            if debug_view is None:
+                print(f"\nSkipping save: No debug view available")
+                return
+                
             # Skip save if metadata indicates we should
             if hasattr(debug_view, 'metadata') and debug_view.metadata.get('skip_save'):
                 print(f"\nSkipping save: {debug_view.metadata['skip_save']}")
                 return
+                
+            # Skip save if "No Feed" was detected by pixel check
+            if hasattr(debug_view, 'metadata') and debug_view.metadata.get('nofeed_detected_by_pixel'):
+                print(f"\nSkipping save: No Feed frame detected by pixel check")
+                return
             
-            # Create combined image if debug view provided
-            if debug_view is not None:
-                debug_h, debug_w = debug_view.shape[:2]
-                frame_h, frame_w = frame.shape[:2]
-                combined = np.zeros((frame_h, frame_w + debug_w, 3), dtype=np.uint8)
-                # Put debug view on left, main frame on right
-                combined[0:debug_h, 0:debug_w] = debug_view
-                combined[0:frame_h, debug_w:] = frame
-                save_image = combined
-            else:
-                save_image = frame
+            # Create combined image with debug view
+            debug_h, debug_w = debug_view.shape[:2]
+            frame_h, frame_w = frame.shape[:2]
+            combined = np.zeros((frame_h, frame_w + debug_w, 3), dtype=np.uint8)
+            # Put debug view on left, main frame on right
+            combined[0:debug_h, 0:debug_w] = debug_view
+            combined[0:frame_h, debug_w:] = frame
+            save_image = combined
             
             save_path = os.path.join(self.save_dir, filename)
+            print(f"DEBUG: Queueing save to {save_path}")
+            
+            # Queue the save operation - actual save and print happens in worker thread
             self.save_queue.put((save_image, save_path))
             
         except Exception as e:
@@ -170,8 +209,59 @@ class CaptureManager:
             if self.is_paused():
                 return
                 
-            if detections.anomalies:
-                self.save_detection(frame, debug_view, check_interval=True)
+            # Only save frames if we have a valid video number (active recording)
+            if self.current_video_number is not None:
+                # Skip saving if 'nofeed' or darkness is detected
+                if detections.darkness_detected or 'nofeed' in detections.rcnn_boxes:
+                    return
+                
+                # Check for interesting detections
+                has_interesting_detection = False
+                
+                # Anomalies are always interesting
+                if detections.anomalies:
+                    has_interesting_detection = True
+                    
+                    # Ensure we have a debug view with contour bounding boxes drawn
+                    if debug_view is None or len(detections.anomalies) == 0:
+                        # If we don't have a debug view or no anomalies are detected,
+                        # we shouldn't save the frame
+                        return
+                
+                # Check for specific RCNN detections that are interesting
+                interesting_classes = ['iss', 'panel', 'sun']  # Classes we're interested in
+                common_classes = ['space', 'earth']  # Common classes we're not interested in
+                
+                # Check if we have any interesting class detections
+                for class_name, boxes in detections.rcnn_boxes.items():
+                    if class_name in interesting_classes and boxes:
+                        has_interesting_detection = True
+                        break
+                
+                # If we only have common classes, don't save
+                if not has_interesting_detection:
+                    only_common_classes = True
+                    for class_name, boxes in detections.rcnn_boxes.items():
+                        if class_name not in common_classes and boxes:
+                            only_common_classes = False
+                            break
+                    
+                    if only_common_classes:
+                        return
+                
+                # If we have lens flares but no anomalies, don't save
+                if 'lf' in detections.rcnn_boxes and detections.rcnn_boxes['lf'] and not detections.anomalies:
+                    return
+                
+                # If we get here, we have a detection worth saving
+                # Use get_next_filename to generate a filename with the current suffix and increment it
+                # This ensures consistent suffix handling across all save operations
+                filename = self.get_next_filename(check_interval=False)
+                if filename is None:
+                    return
+                
+                # Save with the generated filename, but don't check interval again
+                self.save_detection(frame, debug_view, filename=filename, check_interval=False)
                 
         except Exception as e:
             print(f"Error processing detections: {str(e)}")

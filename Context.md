@@ -29,7 +29,7 @@ This system is designed to detect and analyze objects in space footage, from the
    - Provides combined view capabilities
 
 4. **SOD_Capture.py**
-   - Handles saving of detected events
+   - Handles saving of detections
    - Manages burst capture mode
    - Implements thread-safe saving queue
    - Maintains detection counter and directories
@@ -84,9 +84,10 @@ This system is designed to detect and analyze objects in space footage, from the
 ### Recording Features
 - 3-second pre-detection buffer
 - Automatic recording on anomaly detection
-- 2-second post-detection continuation
+- 2.1-second post-detection continuation
 - Numbered .avi file output
 - Efficient frame buffering
+- Continuous debug view throughout recording
 
 ## File Organization
 ```
@@ -143,9 +144,11 @@ Primary usage is monitoring ISS live feed, with:
 Fixed Issues:
 - Working on improving detection accuracy and visualization
 - Implemented changes to save both video (.avi) and image (.jpg) captures
-- Ensured proper handling of the 3-second buffer and 2-second post-detection recording
+- Ensured proper handling of the 3-second buffer and 2.1-second post-detection recording
 - Fixed issues with burst captures and raw frame saving
 - Addressing initialization problems in CaptureManager
+- Removed red masking overlay for improved performance
+- Optimized debug view persistence throughout recording
 
 ## Detection Priorities
 - Primary focus is detecting solid objects within RCNN-identified 'space' regions
@@ -176,12 +179,6 @@ Fixed Issues:
 - Keep all metadata for analysis and debugging
 - Maintain synchronized file naming and organization
 
-
-
-
-
-
-
 ## Recent Updates (January 2024):
 - Improved contour filtering:
   1. Added border margin check (5px) to filter edge detections
@@ -201,17 +198,26 @@ Fixed Issues:
   2. Updated save interval to 2.0 seconds
   3. Improved test image handling with proper 939x720 cropping
   4. Added automatic creation of required directories (AVI/JPG/Burst_raw)
+  5. Reduced MAX_VALID_DETECTIONS to 4 for better quality control
+  6. Removed red masking overlay for improved performance
+  7. Extended debug view persistence throughout recording period
 
-  ## Recent Optimizations
+## Recent Optimizations
 1. Adjusted RCNN cycle to match framerate (54 frames)
 2. Balanced detection parameters for accuracy vs. speed
 3. Optimized video buffer operations
+4. Threaded RCNN
+5. Added 100x100 sliding window filter
+6. Removed unnecessary dark mask processing
+7. Streamlined debug view creation
+8. Improved memory usage in video recording
 
 ## Current Status:
-Continuing to refine detection algorithms for best captures
-Hunting down bugs and inefficiency
-A realtime parameter dashboard is a mdeium-term priority. 
-
+- Continuing to refine detection algorithms for best captures
+- Hunting down bugs and inefficiency
+- Debug view now persists throughout entire recording period
+- Improved performance by removing unnecessary processing
+- Maintaining consistent visualization across all frames
 
 ### Performance Metrics
 - Frame Processing: 12-13ms average
@@ -222,9 +228,16 @@ A realtime parameter dashboard is a mdeium-term priority.
 
 Three things to be built out for deployment:
 1. Near perfect capture, almost there. 
-2. Better error handling, can't crash.
+2. Better error handling, can't crash. - done
 3. Real-time parameter dashboard.
-4. Multiple space window display.
+4. Multiple space window display. - done
 5. Livestream - seem like a simple process
-6. 
-5. 
+6. Test Image Collection system
+7. Enhanced logging system
+
+Recent Additions:
+1. Real-time Console for in-program Constants alteration
+2. Enhanced Logging
+3. Improved debug view persistence
+4. Optimized video recording system
+5. Better memory management
