@@ -136,7 +136,8 @@ class ParameterConsole:
             ("MORPH_KERNEL_SIZE", "morph_var", tk.IntVar),
             ("MAX_BG_BRIGHTNESS", "max_bg_var", tk.IntVar),
             ("MIN_CONTRAST", "min_contrast_var", tk.IntVar),
-            ("MIN_CONTOUR_DIMENSION", "min_contour_var", tk.IntVar)
+            ("MIN_CONTOUR_DIMENSION", "min_contour_var", tk.IntVar),
+            ("DARK_REGION_THRESHOLD", "dark_region_var", tk.IntVar)
         ]
         
         for i, (text, var_name, var_type) in enumerate(params):
@@ -169,6 +170,7 @@ class ParameterConsole:
                 self.max_bg_var.set(const.MAX_BG_BRIGHTNESS)
                 self.min_contrast_var.set(const.MIN_CONTRAST)
                 self.min_contour_var.set(const.MIN_CONTOUR_DIMENSION)
+                self.dark_region_var.set(const.DARK_REGION_THRESHOLD)
                 
                 # Store original values
                 self.original_values = {
@@ -181,7 +183,8 @@ class ParameterConsole:
                     'MORPH_KERNEL_SIZE': const.MORPH_KERNEL_SIZE,
                     'MAX_BG_BRIGHTNESS': const.MAX_BG_BRIGHTNESS,
                     'MIN_CONTRAST': const.MIN_CONTRAST,
-                    'MIN_CONTOUR_DIMENSION': const.MIN_CONTOUR_DIMENSION
+                    'MIN_CONTOUR_DIMENSION': const.MIN_CONTOUR_DIMENSION,
+                    'DARK_REGION_THRESHOLD': const.DARK_REGION_THRESHOLD
                 }
                 
                 # Initialize current values with original values
@@ -213,7 +216,8 @@ class ParameterConsole:
                     'MORPH_KERNEL_SIZE': self.morph_var.get(),
                     'MAX_BG_BRIGHTNESS': self.max_bg_var.get(),
                     'MIN_CONTRAST': self.min_contrast_var.get(),
-                    'MIN_CONTOUR_DIMENSION': self.min_contour_var.get()
+                    'MIN_CONTOUR_DIMENSION': self.min_contour_var.get(),
+                    'DARK_REGION_THRESHOLD': self.dark_region_var.get()
                 }
                 
                 # Validate values
