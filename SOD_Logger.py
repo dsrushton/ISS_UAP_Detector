@@ -302,7 +302,7 @@ class StatusLogger:
                     if 'memory' in status:
                         f.write("\nMemory Usage:\n")
                         for metric, stats in status['memory'].items():
-                            if metric.startswith('gpu'):
+                            if metric.startswith('gpu') or metric == 'ram_used':
                                 f.write(f"{metric:15} min: {stats['min']:6.1f}MB  max: {stats['max']:6.1f}MB  avg: {stats['avg']:6.1f}MB\n")
                             else:
                                 f.write(f"{metric:15} min: {stats['min']:6.1f}%   max: {stats['max']:6.1f}%   avg: {stats['avg']:6.1f}%\n")
@@ -345,7 +345,7 @@ class StatusLogger:
                     if 'memory' in status:
                         print("\nMemory Usage:")
                         for metric, stats in status['memory'].items():
-                            if metric.startswith('gpu'):
+                            if metric.startswith('gpu') or metric == 'ram_used':
                                 print(f"{metric:15} min: {stats['min']:6.1f}MB  max: {stats['max']:6.1f}MB  avg: {stats['avg']:6.1f}MB")
                             else:
                                 print(f"{metric:15} min: {stats['min']:6.1f}%   max: {stats['max']:6.1f}%   avg: {stats['avg']:6.1f}%")

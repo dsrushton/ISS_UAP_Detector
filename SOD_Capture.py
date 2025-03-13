@@ -89,7 +89,7 @@ class CaptureManager:
                     break
                     
                 image, save_path = save_data
-                print(f"DEBUG: Attempting to save to {save_path}")
+                
                 
                 # Check if we've already saved this file
                 if save_path in saved_files:
@@ -168,23 +168,6 @@ class CaptureManager:
                 if filename is None:  # Too soon to save
                     return
             
-            print(f"DEBUG: save_detection called with filename: {filename}")
-            
-            # Skip save if debug_view is None (no contour bounding boxes drawn)
-            if debug_view is None:
-                print(f"\nSkipping save: No debug view available")
-                return
-                
-            # Skip save if metadata indicates we should
-            if hasattr(debug_view, 'metadata') and debug_view.metadata.get('skip_save'):
-                print(f"\nSkipping save: {debug_view.metadata['skip_save']}")
-                return
-                
-            # Skip save if "No Feed" was detected by pixel check
-            if hasattr(debug_view, 'metadata') and debug_view.metadata.get('nofeed_detected_by_pixel'):
-                print(f"\nSkipping save: No Feed frame detected by pixel check")
-                return
-            
             # Create combined image with debug view
             debug_h, debug_w = debug_view.shape[:2]
             frame_h, frame_w = frame.shape[:2]
@@ -195,7 +178,7 @@ class CaptureManager:
             save_image = combined
             
             save_path = os.path.join(self.save_dir, filename)
-            print(f"DEBUG: Queueing save to {save_path}")
+            
             
             # Queue the save operation - actual save and print happens in worker thread
             self.save_queue.put((save_image, save_path))
