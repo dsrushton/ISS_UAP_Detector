@@ -99,7 +99,7 @@ class StatusLogger:
     def set_expected_fps(self, fps: float):
         """Set the expected FPS - keeps method for backward compatibility."""
         pass  # Simplified version doesn't need this
-                
+
     def log_memory_usage(self):
         """Kept for backward compatibility, does nothing in simplified version."""
         pass
