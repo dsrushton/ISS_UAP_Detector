@@ -31,6 +31,7 @@ class StreamManager:
         self.frames_sent = 0
         self.adapt_to_frame_size = False  # Default to not resizing frames
         self.use_software_encoding = False  # Default to hardware encoding
+        self.logger = None  # Reference to the logger
         
         # Create a queue for frames
         self.frames_queue = queue.Queue(maxsize=240)  # Buffer ~4 seconds at 60fps
@@ -41,6 +42,10 @@ class StreamManager:
         """Set whether to use software encoding instead of hardware encoding."""
         self.use_software_encoding = use_software
         print(f"Encoding mode: {'Software (CPU)' if use_software else 'Hardware (NVIDIA)'}")
+    
+    def set_logger(self, logger):
+        """Set the logger reference for tracking stream frames."""
+        self.logger = logger
     
     def start_streaming(self, frames_queue: queue.Queue) -> bool:
         """Start streaming to YouTube using the configured stream key."""
@@ -285,6 +290,11 @@ class StreamManager:
             # Add frame to queue, with a timeout to avoid blocking indefinitely
             self.frames_queue.put(frame, timeout=0.1)
             self.frames_sent += 1
+            
+            # Log the frame for framerate tracking
+            if self.logger:
+                self.logger.log_stream_frame()
+                
             return True
         except queue.Full:
             # Queue is full, which means streaming is falling behind

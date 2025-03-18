@@ -295,7 +295,14 @@ class SpaceObjectDetectionSystem:
             
             # Create debug view if needed
             debug_view = None
-            if 'space' in detections.rcnn_boxes:
+            
+            # Check for special cases first (darkness, no feed, no space)
+            if detections.darkness_detected or 'nofeed' in detections.rcnn_boxes:
+                # For darkness or no feed, create a debug message view
+                # The create_debug_view method now handles these cases automatically
+                debug_view = self.display.create_debug_view(frame, [])
+            elif 'space' in detections.rcnn_boxes:
+                # Normal case with space regions
                 space_data = []
                 space_data.append((
                     detections.rcnn_boxes['space'],
@@ -306,6 +313,10 @@ class SpaceObjectDetectionSystem:
                     detections.space_contours if hasattr(detections, 'space_contours') else None
                 ))
                 debug_view = self.display.create_debug_view(frame, space_data)
+            else:
+                # No space regions found
+                debug_view = self.display.create_debug_view(frame, [])
+            
             self.logger.log_operation_time('debug_view', time.time() - display_start)
             
             # Create combined view
@@ -486,6 +497,9 @@ class SpaceObjectDetectionSystem:
             if self.stream is None:
                 # Always use 1920x1080 for stream dimensions to match our padded output
                 self.stream = StreamManager(frame_width=1920, frame_height=1080)
+                # Set the logger reference
+                if hasattr(self, 'logger') and self.logger:
+                    self.stream.set_logger(self.logger)
                 print("Stream manager initialized with fixed 1920x1080 dimensions")
             
             print("Successfully connected to video source")
@@ -521,7 +535,7 @@ class SpaceObjectDetectionSystem:
         self._setup_display()
         self.is_running = True
         
-        # Get the frame rate for timing control
+        # Get the frame rate for timing calculations and video manager
         fps = self.cap.get(cv2.CAP_PROP_FPS)
         if fps <= 0 or fps > 120:  # Sanity check
             fps = 60.0  # Default to 60 fps if invalid
@@ -529,80 +543,56 @@ class SpaceObjectDetectionSystem:
             
         # Update the system FPS
         self.fps = fps
-            
+        
         # Set the FPS for the video manager to ensure proper buffer size
         print(f"Setting video manager FPS to {fps}")
         self.video.set_fps(fps)
-            
+        
         # Set the expected FPS in the logger for rate calculations
         self.logger.set_expected_fps(fps)
-            
-        # Calculate frame interval in seconds
-        frame_interval = 1.0 / fps
         
-        # Variables for frame rate control
+        # Variables for metrics tracking
         frame_count = 0
         start_time = time.time()
-        buffer_level = 0  # Track buffer level to adjust timing
-        last_frame_time = start_time
         last_logger_check = start_time
         
         # Main processing loop
         consecutive_errors = 0
         try:
             while self.is_running:
-                iteration_start = time.time()
-                
-                # Periodically check if logger is still running (every 60 seconds)
+                # Periodically check if logger is still running (every 5 minutes)
                 current_time = time.time()
-                if current_time - last_logger_check > 300:  # Check every 5 minutes
+                if current_time - last_logger_check > 300:
                     self.logger.ensure_running()
                     last_logger_check = current_time
                 
-                # Calculate elapsed time and expected frame count
-                elapsed_time = iteration_start - start_time
-                expected_frame_count = int(elapsed_time / frame_interval)
-                
-                # If we're ahead of schedule, wait
-                if frame_count > expected_frame_count:
-                    # Calculate time to wait
-                    wait_time = frame_interval - (iteration_start - last_frame_time)
-                    if wait_time > 0:
-                        time.sleep(wait_time)
-                        
                 # Read frame
                 read_start = time.time()
                 ret, frame = self.cap.read()
                 self.logger.log_operation_time('frame_read', time.time() - read_start)
                 
                 if not ret:
-                    # Adjust buffer level down if we're not getting frames
-                    buffer_level = max(0, buffer_level - 1)
+                    consecutive_errors += 1
+                    print(f"Error reading frame ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})")
                     
-                    # If buffer is depleted, handle error
-                    if buffer_level <= 0:
-                        consecutive_errors += 1
-                        print(f"Error reading frame ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})")
+                    # Log the iteration with error
+                    self.logger.log_iteration(False, False, f"Error reading frame ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})")
+                    
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                        print("Too many consecutive errors, reconnecting...")
+                        if not self._attempt_connection(source, is_youtube):
+                            print("Failed to reconnect, exiting")
+                            break
+                        consecutive_errors = 0
                         
-                        # Log the iteration with error
-                        self.logger.log_iteration(False, False, f"Error reading frame ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})")
-                        
-                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                            print("Too many consecutive errors, reconnecting...")
-                            if not self._attempt_connection(source, is_youtube):
-                                print("Failed to reconnect, exiting")
-                                break
-                            consecutive_errors = 0
-                            
-                        # Short delay before retry
-                        time.sleep(0.1)
-                        continue
+                    # Short delay before retry
+                    time.sleep(0.1)
+                    continue
                 else:
-                    # Reset error counter and update buffer level
+                    # Reset error counter
                     consecutive_errors = 0
-                    buffer_level = min(10, buffer_level + 1)  # Cap at 10
                     
-                    # Process frame
+                    # Process frame - no frame limiting
                     process_result = self.process_frame(frame, self.display.avoid_boxes)
                     
                     # Check if we should quit
@@ -610,25 +600,16 @@ class SpaceObjectDetectionSystem:
                         # Error occurred
                         self.logger.log_iteration(False, False, "Error processing frame")
                     elif isinstance(process_result, bool) and not process_result:
-                        # Unpack the bool
-                        quit_requested = process_result
-                        
-                        if quit_requested:
-                            print("Quit requested")
-                            break
-                            
-                        # Successful processing with quit info
-                        self.logger.log_iteration(False, False, "Quit requested")
+                        print("Quit requested")
+                        break
                     else:
-                        # Successful processing with detection info
+                        # Successful processing
                         self.logger.log_iteration(True, True, "Processed successfully")
                         
-                    # Update frame count and timing
+                    # Update frame count for metrics only
                     frame_count += 1
-                    last_frame_time = time.time()
                 
-                # Key handling is now done in process_frame, no need for additional waitKey here
-                # The process_frame method will handle quitting and other key commands
+                # Key handling is now done in process_frame
                 
         except Exception as e:
             print(f"Error processing video stream: {str(e)}")

@@ -73,6 +73,18 @@ class SpaceObjectDetector:
             'scores': {}
         }
         self.last_rcnn_frame = -1
+
+        # Add cached border data
+        self.cached_space_contours = None
+        self.cached_space_boxes = None
+        self.cached_space_mask = None
+        self.cached_border_margin = None
+        self.last_border_update_frame = -1
+        
+        # Add cached darkness detection state
+        self.cached_darkness_detected = False
+        self.cached_darkness_area_ratio = 0.0
+        self.last_darkness_update_frame = -1
         
         # Initialize transform
         self.transform = T.Compose([
@@ -108,34 +120,50 @@ class SpaceObjectDetector:
             # Get latest constants
             import SOD_Constants as const
             
-            # Create a combined space mask for all space boxes
-            h, w = frame.shape[:2]
-            space_mask = np.zeros((h, w), dtype=np.uint8)
+            # Use cached space contours if available and not too old, otherwise recalculate
+            use_cached_data = (
+                self.cached_space_contours is not None and 
+                self.cached_space_mask is not None and
+                self.last_border_update_frame > 0 and
+                self.frame_count - self.last_border_update_frame < self.rcnn_cycle
+            )
             
-            # Ensure space_boxes is a list of boxes, not a single box
-            if not isinstance(space_boxes, list):
-                space_boxes = [space_boxes]
-            
-            # Draw all space boxes on the mask
-            for box in space_boxes:
-                x1, y1, x2, y2 = map(int, box)
-                cv2.rectangle(space_mask, (x1, y1), (x2, y2), 255, -1)
-            
-            # If we have avoid boxes, remove them from the space mask
-            if avoid_boxes and len(avoid_boxes) > 0:
-                for box in avoid_boxes:
-                    # Check if box is in the correct format (x1, y1, x2, y2)
-                    if len(box) == 4:
-                        x1, y1, x2, y2 = map(int, box)
-                        # Draw the avoid box in black (0) to remove it from the space mask
-                        cv2.rectangle(space_mask, (x1, y1), (x2, y2), 0, -1)
-            
-            # Find external contour of all space regions combined
-            space_contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            # Clear mask and redraw only the external contour
-            space_mask = np.zeros((h, w), dtype=np.uint8)
-            cv2.drawContours(space_mask, space_contours, -1, 255, -1)
+            if use_cached_data:
+                space_contours = self.cached_space_contours
+                space_mask = self.cached_space_mask
+                border_margin = self.cached_border_margin
+            else:
+                # Create a combined space mask for all space boxes if cached data not available
+                h, w = frame.shape[:2]
+                space_mask = np.zeros((h, w), dtype=np.uint8)
+                
+                # Ensure space_boxes is a list of boxes, not a single box
+                if not isinstance(space_boxes, list):
+                    space_boxes = [space_boxes]
+                
+                # Draw all space boxes on the mask
+                for box in space_boxes:
+                    x1, y1, x2, y2 = map(int, box)
+                    cv2.rectangle(space_mask, (x1, y1), (x2, y2), 255, -1)
+                
+                # If we have avoid boxes, remove them from the space mask
+                if avoid_boxes and len(avoid_boxes) > 0:
+                    for box in avoid_boxes:
+                        # Check if box is in the correct format (x1, y1, x2, y2)
+                        if len(box) == 4:
+                            x1, y1, x2, y2 = map(int, box)
+                            # Draw the avoid box in black (0) to remove it from the space mask
+                            cv2.rectangle(space_mask, (x1, y1), (x2, y2), 0, -1)
+                
+                # Find external contour of all space regions combined
+                space_contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                # Clear mask and redraw only the external contour
+                space_mask = np.zeros((h, w), dtype=np.uint8)
+                cv2.drawContours(space_mask, space_contours, -1, 255, -1)
+                
+                # Get the border margin
+                border_margin = const.get_value('BORDER_MARGIN')
             
             # Store the space mask and contours in results
             results.space_mask = space_mask
@@ -228,7 +256,6 @@ class SpaceObjectDetector:
             # Process each contour
             analysis_start = time.time()
             max_valid = const.get_value('MAX_VALID_DETECTIONS')
-            border_margin = const.get_value('BORDER_MARGIN')
             min_contrast = const.get_value('MIN_CONTRAST')
             
             for contour in contours:
@@ -510,6 +537,33 @@ class SpaceObjectDetector:
         
         return combined_boxes
 
+    def _update_darkness_state(self, frame: np.ndarray) -> None:
+        """Update cached darkness detection state based on current frame and RCNN results."""
+        import SOD_Constants as const
+        
+        darkness_start = time.time()
+        self.cached_darkness_detected = False
+        self.cached_darkness_area_ratio = 0.0
+        
+        # Check for darkness using 'td' boxes from RCNN results
+        if 'td' in self.last_rcnn_results['boxes']:
+            frame_area = frame.shape[0] * frame.shape[1]
+            for box in self.last_rcnn_results['boxes']['td']:
+                x1, y1, x2, y2 = box
+                td_area = (x2 - x1) * (y2 - y1)
+                td_ratio = td_area / frame_area
+                if td_ratio > const.get_value('DARKNESS_AREA_THRESHOLD'):
+                    self.cached_darkness_detected = True
+                    self.cached_darkness_area_ratio = td_ratio
+                    break
+        
+        # Update the last update frame number
+        self.last_darkness_update_frame = self.frame_count
+        
+        # Log timing for darkness detection update
+        if self.logger:
+            self.logger.log_operation_time('darkness_update', time.time() - darkness_start)
+
     def process_frame(self, frame: np.ndarray, avoid_boxes: List[Tuple[int, int, int, int]] = None, is_test_frame: bool = False) -> Optional[DetectionResults]:
         """Process frame through detection pipeline."""
         try:
@@ -541,15 +595,25 @@ class SpaceObjectDetector:
             results.rcnn_boxes = self.last_rcnn_results.get('boxes', {})
             results.rcnn_scores = self.last_rcnn_results.get('scores', {})
             
-            # Check for darkness
-            if 'td' in self.last_rcnn_results['boxes']:
-                frame_area = frame.shape[0] * frame.shape[1]
-                for box in self.last_rcnn_results['boxes']['td']:
-                    x1, y1, x2, y2 = box
-                    td_area = (x2 - x1) * (y2 - y1)
-                    if td_area > frame_area * const.get_value('DARKNESS_AREA_THRESHOLD'):
-                        results.darkness_detected = True
-                        break
+            # Check for darkness - use cached values or update if RCNN just ran or it's the first time
+            use_cached_darkness = (
+                self.last_darkness_update_frame > 0 and
+                self.frame_count - self.last_darkness_update_frame < self.rcnn_cycle
+            )
+            
+            if use_cached_darkness:
+                # Use cached darkness detection state
+                results.darkness_detected = self.cached_darkness_detected
+                if self.cached_darkness_detected:
+                    results.metadata['darkness_area_ratio'] = self.cached_darkness_area_ratio
+            else:
+                # Update darkness detection state
+                self._update_darkness_state(frame)
+                
+                # Use newly calculated values
+                results.darkness_detected = self.cached_darkness_detected
+                if self.cached_darkness_detected:
+                    results.metadata['darkness_area_ratio'] = self.cached_darkness_area_ratio
             
             # Check for darkness or no feed from RCNN
             if results.darkness_detected or 'nofeed' in results.rcnn_boxes:
@@ -573,11 +637,20 @@ class SpaceObjectDetector:
                 results.space_box = space_boxes[0]  # Main combined box for display
                 results.metadata['all_space_boxes'] = space_boxes  # Store all boxes for reference
                 
+                # Update cached border data if this is an RCNN frame or if boxes have changed
+                if is_rcnn_frame or is_test_frame or not self._are_space_boxes_same(space_boxes):
+                    border_update_start = time.time()
+                    self._update_cached_border_data(frame, space_boxes)
+                    self.last_border_update_frame = self.frame_count
+                    
+                    if is_rcnn_frame:
+                        self.logger.log_operation_time('border_data_update', time.time() - border_update_start)
+                
                 # Track all anomalies and metrics
                 all_anomalies = []
                 all_metrics = []
                 
-                # Process the main combined space box
+                # Process the main combined space box using cached border data
                 box_results = self.detect_anomalies(frame, space_boxes, avoid_boxes)
                 
                 # Store all results from the combined box
@@ -738,6 +811,10 @@ class SpaceObjectDetector:
             self.last_rcnn_frame = self.frame_count
             self.rcnn_queue.task_done()
             
+            # Update darkness detection state when RCNN results are refreshed
+            # Only do this in the worker thread to avoid blocking the main thread
+            self._update_darkness_state(frame)
+            
             # We're keeping everything on GPU, so don't explicitly clean up
             # Just delete Python references to allow garbage collection when needed
 
@@ -762,6 +839,54 @@ class SpaceObjectDetector:
                     pass
         except Exception as e:
             print(f"Error forcing RCNN detection: {e}")
+
+    def _are_space_boxes_same(self, new_boxes):
+        """Compare new space boxes with cached ones to determine if we need to recompute border data."""
+        if self.cached_space_boxes is None or len(new_boxes) != len(self.cached_space_boxes):
+            return False
+            
+        # Compare boxes - allow small tolerance for rounding errors
+        for i, new_box in enumerate(new_boxes):
+            old_box = self.cached_space_boxes[i]
+            
+            # Check if any corner differs by more than 2 pixels
+            if (abs(new_box[0] - old_box[0]) > 2 or 
+                abs(new_box[1] - old_box[1]) > 2 or 
+                abs(new_box[2] - old_box[2]) > 2 or 
+                abs(new_box[3] - old_box[3]) > 2):
+                return False
+                
+        return True
+        
+    def _update_cached_border_data(self, frame, space_boxes):
+        """Update cached border data for efficient border filtering."""
+        import SOD_Constants as const
+        
+        # Store boxes for future comparison
+        self.cached_space_boxes = space_boxes.copy()
+        
+        # Cache border margin since it's needed for border filtering
+        self.cached_border_margin = const.get_value('BORDER_MARGIN')
+        
+        # Create a fresh space mask - this is needed for creating space contours
+        h, w = frame.shape[:2]
+        space_mask = np.zeros((h, w), dtype=np.uint8)
+        
+        # Draw all space boxes on the mask
+        for box in space_boxes:
+            x1, y1, x2, y2 = map(int, box)
+            cv2.rectangle(space_mask, (x1, y1), (x2, y2), 255, -1)
+        
+        # Find external contour of all space regions combined
+        space_contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Clear mask and redraw only the external contour
+        space_mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(space_mask, space_contours, -1, 255, -1)
+        
+        # Store the space mask and contours for reuse
+        self.cached_space_mask = space_mask
+        self.cached_space_contours = space_contours
 
 class FastRCNNPredictor(torch.nn.Module):
     """Simple FastRCNN prediction head."""

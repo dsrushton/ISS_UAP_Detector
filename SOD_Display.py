@@ -199,10 +199,71 @@ class DisplayManager:
             if is_new_allocation:
                 print(f"Debug buffers allocated with shape {self.debug_buffer.shape}")
 
+    def create_debug_message_view(self, message: str) -> np.ndarray:
+        """Create a black debug view with centered text message.
+        
+        Args:
+            message: Message to display, can contain \n for line breaks
+            
+        Returns:
+            Black debug view with centered text
+        """
+        # Create a black canvas of the correct size
+        debug_view = np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8)
+        
+        # Handle multiline messages
+        lines = message.split('\n')
+        
+        # Calculate vertical position for centered text block
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 1.0
+        thickness = 2
+        color = (255, 255, 255)  # White text
+        
+        # Calculate total height of all text lines to center vertically
+        line_heights = []
+        for line in lines:
+            (_, text_height), _ = cv2.getTextSize(line, font, font_scale, thickness)
+            line_heights.append(text_height + 10)  # Add 10px padding between lines
+            
+        total_height = sum(line_heights)
+        start_y = (720 - total_height) // 2
+        
+        # Draw each line centered horizontally
+        current_y = start_y
+        for i, line in enumerate(lines):
+            (text_width, _), _ = cv2.getTextSize(line, font, font_scale, thickness)
+            text_x = (CROPPED_WIDTH - text_width) // 2
+            
+            # Draw text with shadow for better visibility
+            # Draw shadow
+            cv2.putText(debug_view, line, (text_x+2, current_y+2), font, font_scale, (0, 0, 0), thickness+1)
+            # Draw main text
+            cv2.putText(debug_view, line, (text_x, current_y), font, font_scale, color, thickness)
+            
+            # Move to next line
+            current_y += line_heights[i]
+            
+        return debug_view
+
     def create_debug_view(self, frame: np.ndarray, space_data: list) -> np.ndarray:
         """Create debug visualization using the same structure as main view."""
-        if not DEBUG_VIEW_ENABLED or not space_data:
+        if not DEBUG_VIEW_ENABLED:
             return np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8)
+            
+        # Handle special cases where we need to show a message instead of space data
+        if hasattr(self, 'latest_detections') and self.latest_detections is not None:
+            # Check for darkness case
+            if self.latest_detections.darkness_detected:
+                return self.create_debug_message_view("No \"Space\" regions to analyze currently\n\nTry back soon\n\n\n\nISS In Darkness")
+                
+            # Check for no feed case
+            if 'nofeed' in self.latest_detections.rcnn_boxes:
+                return self.create_debug_message_view("No \"Space\" regions to analyze currently\n\nTry back soon\n\n\n\nStream Interuppted")
+                
+        # Check if space_data is missing or empty (no space boxes to process)
+        if not space_data:
+            return self.create_debug_message_view("No \"Space\" regions to analyze currently\n\nTry back soon\n\n\n\n")
             
         debug_start = time.time()
         
@@ -551,6 +612,7 @@ class DisplayManager:
             if not self.is_streaming and hasattr(self, 'latest_detections') and self.latest_detections is not None:
                 self.draw_space_boxes_on_padded(padded_combined, self.latest_detections)
                 
+            # Log the total time for the combined view creation including padding
             self.logger.log_operation_time('total_combined_view', time.time() - combined_start)
             return padded_combined
             
