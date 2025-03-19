@@ -15,6 +15,7 @@ import time
 import threading
 import queue
 import importlib
+import math
 
 # Only import non-changing constants at module level
 from SOD_Constants import (
@@ -277,46 +278,61 @@ class SpaceObjectDetector:
                 if (w < min_dim or h < min_dim or w > max_width or h > max_height):
                     continue
                 
-                # Convert to global coordinates for filtering
+                # Convert to global coordinates for later use
                 abs_x = x + x1
                 abs_y = y + y1
-                
-                # Check if any part of the contour is too close to space contour
-                too_close_to_border = False
-                for space_contour in space_contours:
-                    # Ensure contour has proper shape and enough points
-                    if len(space_contour) < 3:
-                        continue
-                        
-                    # Get contour points and ensure proper shape
-                    contour_points = contour.reshape(-1, 2)  # This handles both single and multi-point contours
-                    
-                    if len(contour_points) < 3:  # Double-check after reshape
-                        continue
-                    
-                    # Check each point against the space contour
-                    for point in contour_points:
-                        dist = cv2.pointPolygonTest(space_contour, (float(point[0] + x1), float(point[1] + y1)), True)
-                        if abs(dist) < border_margin:
-                            too_close_to_border = True
-                            break
-                    if too_close_to_border:
-                        break
-                
-                if too_close_to_border:
-                    continue
                 
                 # Create binary mask for exact object boundaries
                 obj_mask = np.zeros_like(bright_mask)
                 cv2.drawContours(obj_mask, [contour], -1, 255, -1)
                 
-                # Only proceed if analyze_object approves this contour
+                # Check if object passes brightness and contrast requirements first
                 is_valid, metrics = self.analyze_object(roi_max, obj_mask, w, h, contour)
                 if not is_valid:
                     continue
                 
                 # Skip if contrast is too low or negative
                 if metrics['contrast'] < min_contrast:
+                    continue
+                
+                # Only now check if the contour is too close to the border
+                # This is more expensive but we do it only for valid detections
+                too_close_to_border = False
+                
+                # Get bounding rect of this contour in local coordinates
+                # We already have x, y, w, h from above
+                cx_global = abs_x
+                cy_global = abs_y
+                
+                for space_contour in space_contours:
+                    # Get bounding rect of space contour
+                    sx, sy, sw, sh = cv2.boundingRect(space_contour)
+                    
+                    # Calculate minimum distance between boxes
+                    # If boxes are far apart, the contour can't be close to the border
+                    min_dist_x = max(0, max(cx_global - (sx + sw), sx - (cx_global + w)))
+                    min_dist_y = max(0, max(cy_global - (sy + sh), sy - (cy_global + h)))
+                    min_dist = math.sqrt(min_dist_x**2 + min_dist_y**2)
+                    
+                    # If minimum distance is greater than border margin, definitely not too close
+                    if min_dist > border_margin:
+                        continue
+                    
+                    # Boxes are close enough to potentially have points within border margin
+                    # Only now do the more expensive point-by-point check
+                    contour_points = contour.reshape(-1, 2)
+                    for point in contour_points:
+                        global_x = point[0] + x1
+                        global_y = point[1] + y1
+                        dist = cv2.pointPolygonTest(space_contour, (float(global_x), float(global_y)), True)
+                        if abs(dist) < border_margin:
+                            too_close_to_border = True
+                            break
+                    
+                    if too_close_to_border:
+                        break
+                
+                if too_close_to_border:
                     continue
                 
                 # Only collect filter boxes if we have a potentially valid detection
@@ -486,56 +502,24 @@ class SpaceObjectDetector:
 
     def _combine_overlapping_boxes(self, boxes: List[Tuple[float, float, float, float]]) -> List[Tuple[float, float, float, float]]:
         """
-        Combine overlapping space boxes into larger boxes.
+        Combine overlapping space boxes into a set of non-overlapping boxes.
+        
+        Instead of merging boxes into a single larger box, we maintain the original boxes
+        but remove any interior borders when drawing the mask, creating multi-faced polygons.
         
         Args:
             boxes: List of (x1, y1, x2, y2) boxes
             
         Returns:
-            List of combined boxes
+            List of original boxes that will be treated as a combined polygon
         """
-        if not boxes:
-            return []
+        if not boxes or len(boxes) <= 1:
+            return boxes
             
-        # Convert to numpy array for easier manipulation
-        boxes = np.array(boxes)
-        combined_boxes = []
-        used = set()
-        
-        for i, box1 in enumerate(boxes):
-            if i in used:
-                continue
-                
-            # Start with current box
-            x1, y1, x2, y2 = box1
-            used.add(i)
-            
-            # Keep expanding box while we find overlaps
-            changed = True
-            while changed:
-                changed = False
-                for j, box2 in enumerate(boxes):
-                    if j in used:
-                        continue
-                        
-                    # Check if boxes overlap
-                    ox1 = max(x1, box2[0])
-                    oy1 = max(y1, box2[1])
-                    ox2 = min(x2, box2[2])
-                    oy2 = min(y2, box2[3])
-                    
-                    if ox1 < ox2 and oy1 < oy2:
-                        # Boxes overlap, expand current box
-                        x1 = min(x1, box2[0])
-                        y1 = min(y1, box2[1])
-                        x2 = max(x2, box2[2])
-                        y2 = max(y2, box2[3])
-                        used.add(j)
-                        changed = True
-            
-            combined_boxes.append((x1, y1, x2, y2))
-        
-        return combined_boxes
+        # For multi-faced polygons, we don't need to modify the boxes themselves
+        # They should be passed as-is to the mask creation function that will handle
+        # drawing them without internal borders
+        return boxes
 
     def _update_darkness_state(self, frame: np.ndarray) -> None:
         """Update cached darkness detection state based on current frame and RCNN results."""
@@ -872,21 +856,21 @@ class SpaceObjectDetector:
         h, w = frame.shape[:2]
         space_mask = np.zeros((h, w), dtype=np.uint8)
         
-        # Draw all space boxes on the mask
+        # Draw all space boxes on the mask - keeping original boxes
         for box in space_boxes:
             x1, y1, x2, y2 = map(int, box)
             cv2.rectangle(space_mask, (x1, y1), (x2, y2), 255, -1)
         
-        # Find external contour of all space regions combined
-        space_contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Find external contours directly - this properly excludes internal borders
+        external_contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Clear mask and redraw only the external contour
+        # Clear mask and redraw only the external contours
         space_mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.drawContours(space_mask, space_contours, -1, 255, -1)
+        cv2.drawContours(space_mask, external_contours, -1, 255, -1)
         
         # Store the space mask and contours for reuse
         self.cached_space_mask = space_mask
-        self.cached_space_contours = space_contours
+        self.cached_space_contours = external_contours
 
 class FastRCNNPredictor(torch.nn.Module):
     """Simple FastRCNN prediction head."""

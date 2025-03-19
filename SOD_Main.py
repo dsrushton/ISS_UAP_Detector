@@ -203,7 +203,6 @@ class SpaceObjectDetectionSystem:
             else:
                 if should_print:
                     print("\nFailed to start streaming - check console for details")
-                    print("Press 'i' to run streaming troubleshooting")
                     self.last_streaming_message_time = current_time
         else:
             if should_print:
@@ -304,8 +303,10 @@ class SpaceObjectDetectionSystem:
             elif 'space' in detections.rcnn_boxes:
                 # Normal case with space regions
                 space_data = []
+                # Use combined space boxes from metadata if available, otherwise use raw RCNN boxes
+                space_boxes = detections.metadata.get('all_space_boxes', detections.rcnn_boxes['space'])
                 space_data.append((
-                    detections.rcnn_boxes['space'],
+                    space_boxes,
                     detections.contours,
                     detections.anomalies,
                     detections.metadata,
@@ -385,7 +386,7 @@ class SpaceObjectDetectionSystem:
                 self.burst_remaining -= 1
             
             # Use a 1ms timeout for key checks to minimize display latency
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.pollKey() & 0xFF  # Non-blocking key check instead of waitKey(1)
             if key == ord('q'):
                 print("\nQuitting...")
                 self._cleanup()
@@ -415,23 +416,8 @@ class SpaceObjectDetectionSystem:
                 if self.display:
                     self.display.avoid_boxes = []  # Clear avoid boxes
                     print("\nCleared avoid boxes")
-            elif key == ord('s') or key == ord('1'):
+            elif key == ord('s'):
                 self.toggle_streaming()
-            elif key == ord('2'):
-                # Run streaming troubleshooting
-                print("\nTroubleshooting key pressed - running diagnostics...")
-                if hasattr(self, 'stream') and self.stream:
-                    self.stream.troubleshoot_streaming()
-            elif key == ord('4'):
-                # Start burst capture
-                if hasattr(self, 'capture') and self.capture:
-                    self.capture.start_burst_capture()
-                    print("\nStarted burst capture mode")
-            elif key == ord('5'):
-                # Pause capture for 5 seconds
-                if hasattr(self, 'capture') and self.capture:
-                    self.capture.pause_capture()
-                    print("\nPaused capture for 5 seconds")
             
             return True
             
@@ -560,6 +546,9 @@ class SpaceObjectDetectionSystem:
         consecutive_errors = 0
         try:
             while self.is_running:
+                # Start timing the main loop cycle
+                main_loop_start = time.time()
+                
                 # Periodically check if logger is still running (every 5 minutes)
                 current_time = time.time()
                 if current_time - last_logger_check > 300:
@@ -608,6 +597,11 @@ class SpaceObjectDetectionSystem:
                         
                     # Update frame count for metrics only
                     frame_count += 1
+                
+                # Record the main loop cycle time
+                main_loop_time = time.time() - main_loop_start
+                if self.logger:
+                    self.logger.log_operation_time('main_loop_cycle', main_loop_time)
                 
                 # Key handling is now done in process_frame
                 
@@ -710,16 +704,17 @@ class SpaceObjectDetectionSystem:
         """Process live feed from camera."""
         print("\nProcessing live feed. Press 'q' to quit.")
         print("Key commands:")
-        print("  s/1 - Toggle streaming (start/stop)")
-        print("  2 - Run streaming troubleshooting")
-        print("  4 - Start burst capture")
-        print("  5 - Pause capture for 5 seconds")
-        print("  c - Clear avoid boxes")
+        print("  s - Toggle streaming (start/stop)")
         print("  t - Cycle through test frames (1 second each)")
         print("  b - Toggle burst capture mode")
+        print("  c - Clear avoid boxes")
+        print("  q - Quit")
         
         # Main processing loop
         while True:
+            # Start timing the main loop cycle
+            main_loop_start = time.time()
+            
             # Get frame from video source
             ret, frame = self.video.get_frame()
             if not ret or frame is None:
@@ -742,8 +737,11 @@ class SpaceObjectDetectionSystem:
                 break
             
             # Key handling is now done in process_frame, no need for additional waitKey here
-            # Additional key handling for specific functions in this mode
-            # Use the key from process_frame result if needed for special functions
+            
+            # Record the main loop cycle time
+            main_loop_time = time.time() - main_loop_start
+            if self.logger:
+                self.logger.log_operation_time('main_loop_cycle', main_loop_time)
 
     def load_test_images(self) -> bool:
         """Load all test images from the Test_Image_Collection directory."""

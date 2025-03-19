@@ -31,6 +31,7 @@ class StatusLogger:
         self.operation_times = {
             'total_iteration': deque(maxlen=100),  # Total time for detection loop
             'combined_view': deque(maxlen=100),    # Time for building combined view
+            'main_loop_cycle': deque(maxlen=100),  # Total time for each main loop cycle
         }
         
         # Ensure logs directory exists
@@ -88,7 +89,7 @@ class StatusLogger:
             with open(self.log_file, 'a') as f:
                 f.write(f"[ERROR] {datetime.now()}: {error_msg}\n")
         except Exception as e:
-            print(f"Failed to write to error log: {str(e)}")
+                print(f"Failed to write to error log: {str(e)}")
 
     def ensure_running(self):
         """Ensure logger thread is running, restart if needed."""
@@ -151,10 +152,16 @@ class StatusLogger:
             if 'combined_view' in self.operation_times and self.operation_times['combined_view']:
                 avg_combined_view_time = sum(self.operation_times['combined_view']) / len(self.operation_times['combined_view'])
             
+            # Calculate main loop cycle time
+            avg_main_loop_time = 0
+            if 'main_loop_cycle' in self.operation_times and self.operation_times['main_loop_cycle']:
+                avg_main_loop_time = sum(self.operation_times['main_loop_cycle']) / len(self.operation_times['main_loop_cycle'])
+                
             # Log to console
             print(f"\n--- Performance Metrics ({datetime.now().strftime('%H:%M:%S')}) ---")
             print(f"Detection loop: {detection_fps:.1f} FPS (avg time: {avg_total_time*1000:.1f} ms)")
             print(f"Combined view: {avg_combined_view_time*1000:.1f} ms per frame")
+            print(f"Main loop cycle: {avg_main_loop_time*1000:.1f} ms per cycle")
             print(f"Stream output: {stream_fps:.1f} FPS")
             
             # Log to file
@@ -162,6 +169,7 @@ class StatusLogger:
                 f.write(f"\n--- {datetime.now()} ---\n")
                 f.write(f"Detection: {detection_fps:.1f} FPS (avg time: {avg_total_time*1000:.1f} ms)\n")
                 f.write(f"Combined view: {avg_combined_view_time*1000:.1f} ms per frame\n")
+                f.write(f"Main loop cycle: {avg_main_loop_time*1000:.1f} ms per cycle\n")
                 f.write(f"Stream: {stream_fps:.1f} FPS\n")
                 
             # Update counters for next calculation
