@@ -51,7 +51,7 @@ class SpaceObjectDetectionSystem:
         from SOD_Capture import CaptureManager
         
         self.detector = SpaceObjectDetector()
-        self.display = DisplayManager()
+        self.display = None  # Will be initialized later
         self.capture = CaptureManager()
         self.logger = None  # Will be initialized in initialize()
         self.console = None  # Will be initialized later
@@ -106,6 +106,8 @@ class SpaceObjectDetectionSystem:
             self.video = VideoManager(self.logger)
             
             # Set up display manager
+            from SOD_Display import DisplayManager
+            self.display = DisplayManager()
             self.display.set_logger(self.logger)
             
             # Set up detector
@@ -345,7 +347,10 @@ class SpaceObjectDetectionSystem:
             # are saved with incremented suffixes (-a, -b, -c, etc.)
             elif has_detection and self.video and self.video.recording and self.capture:
                 # Only process if we're within the POST_DETECTION_SECONDS window
-                # but after the SAVE_INTERVAL to avoid saving frames too frequently
+                # but after the SAVE_s     fv
+                # 
+                # 
+                # VAL to avoid saving frames too frequently
                 current_time = time.time()
                 if (self.video.frames_since_detection / self.fps < POST_DETECTION_SECONDS and 
                     current_time - self.capture.last_save_time >= SAVE_INTERVAL):
@@ -358,16 +363,23 @@ class SpaceObjectDetectionSystem:
             
             # Stream frame if streaming is active
             if self.stream and self.stream.is_streaming:
-                # Resize the combined frame to match the expected dimensions for streaming
+                # Only resize if dimensions don't match to avoid unnecessary CPU usage
                 if combined_frame.shape[1] != self.stream.frame_width or combined_frame.shape[0] != self.stream.frame_height:
-                    stream_frame = cv2.resize(combined_frame, (self.stream.frame_width, self.stream.frame_height))
+                    # Use a faster interpolation method for streaming since quality is less critical
+                    stream_frame = cv2.resize(combined_frame, 
+                                             (self.stream.frame_width, self.stream.frame_height),
+                                             interpolation=cv2.INTER_NEAREST)
                 else:
+                    # Pass the frame directly without copying if dimensions already match
                     stream_frame = combined_frame
-                # Send the frame to the stream manager
+                    
+                # Send the frame to the stream manager (no need to copy, StreamManager handles this)
                 self.stream.stream_frame(stream_frame)
             
-            # Display the combined frame in a single window
-            cv2.imshow('ISS Object Detection', combined_frame)
+            # Display the combined frame using DisplayManager with optional rate limiting
+            # Only display every X frames to reduce display overhead (e.g., 2 = 30fps display at 60fps processing)
+            display_rate = 1  # Set to 1 for every frame, 2 for every other frame, etc.
+            key = self.display.show_frame(combined_frame, rate_limit=display_rate)
             
             # Update frame count
             self.frame_count += 1
@@ -385,8 +397,7 @@ class SpaceObjectDetectionSystem:
                     self.capture.save_raw_frame(frame)
                 self.burst_remaining -= 1
             
-            # Use a 1ms timeout for key checks to minimize display latency
-            key = cv2.pollKey() & 0xFF  # Non-blocking key check instead of waitKey(1)
+            # Process key commands
             if key == ord('q'):
                 print("\nQuitting...")
                 self._cleanup()
@@ -497,20 +508,17 @@ class SpaceObjectDetectionSystem:
 
     def _setup_display(self):
         """Set up display windows and callbacks."""
-        cv2.namedWindow('ISS Object Detection', cv2.WINDOW_NORMAL)
-        # Set a fixed window size to match our 1920x1080 padded output
-        cv2.resizeWindow('ISS Object Detection', 1920, 1080)
-        cv2.setMouseCallback('ISS Object Detection', self.display._mouse_callback)
+        # Note: Window initialization and callbacks are now handled by DisplayManager
+        # This method now just ensures the DisplayManager is properly referenced
         
-        # Create a blank initial frame to ensure the window is visible
-        blank_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        # Add text to the blank frame
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(blank_frame, 'Initializing...', (int(1920/2) - 200, int(1080/2)), 
-                    font, 2, (255, 255, 255), 3, cv2.LINE_AA)
-        cv2.imshow('ISS Object Detection', blank_frame)
-        # Force window to update and be visible
-        cv2.waitKey(1)
+        # Check if display manager needs initialization
+        if not self.display:
+            from SOD_Display import DisplayManager
+            self.display = DisplayManager()
+            
+        # Make sure the display has a logger reference
+        if self.logger:
+            self.display.set_logger(self.logger)
 
     def process_video_stream(self, source: str, is_youtube: bool = False) -> None:
         """Process video stream from source."""

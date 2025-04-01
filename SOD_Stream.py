@@ -31,12 +31,20 @@ class StreamManager:
         self.frames_sent = 0
         self.adapt_to_frame_size = False  # Default to not resizing frames
         self.use_software_encoding = False  # Default to hardware encoding
+        self.target_fps = 59.94  # Target fps for streaming (slightly under 60 to avoid overruns)
         self.logger = None  # Reference to the logger
         
-        # Create a queue for frames
-        self.frames_queue = queue.Queue(maxsize=240)  # Buffer ~4 seconds at 60fps
+        # Create a queue for frames - increase buffer size to handle spikes
+        self.frames_queue = queue.Queue(maxsize=300)  # Buffer ~5 seconds at 60fps
         
-        print(f"StreamManager initialized with frame size: {frame_width}x{frame_height}")
+        # Add a black frame for emergencies when queue is empty
+        self.black_frame = None
+        
+        # Last frame timestamp for rate limiting
+        self.last_frame_time = 0
+        self.frame_interval = 1.0 / self.target_fps
+        
+        print(f"StreamManager initialized with frame size: {frame_width}x{frame_height}, target FPS: {self.target_fps}")
     
     def set_software_encoding(self, use_software: bool) -> None:
         """Set whether to use software encoding instead of hardware encoding."""
@@ -139,59 +147,94 @@ class StreamManager:
             self.frames_queue = frames_queue
             
             def stream_frames():
-                # Initialize counters without printing debug message
+                # Initialize counters and timing variables
                 frames_sent = 0
                 last_report_time = time.time()
+                black_frame_count = 0
                 
                 try:
                     while self.is_streaming:
+                        # No frame timing enforcement - send frames as fast as we can get them
+                        # This lets FFmpeg and YouTube handle the rate rather than our own timing
+                        
+                        # Try to get a frame, wait a bit longer if queue is empty to avoid black frames
                         try:
-                            # Get frame from queue with timeout
-                            frame = self.frames_queue.get(timeout=1.0)
+                            # Use a longer timeout (50ms instead of 10ms) to give more time for frames to arrive
+                            frame = self.frames_queue.get(timeout=0.05)
                             
-                            # Write the frame to the FFmpeg process
-                            if self.ffmpeg_process and self.ffmpeg_process.poll() is None:
-                                try:
-                                    # Convert frame to bytes and write to stdin
-                                    self.ffmpeg_process.stdin.write(frame.tobytes())
-                                    frames_sent += 1
-                                    
-                                    # Report progress periodically
-                                    current_time = time.time()
-                                    if current_time - last_report_time >= 60.0:
-                                        elapsed = current_time - self.stream_start_time
-                                        fps = frames_sent / elapsed if elapsed > 0 else 0
-                                        print(f"Streaming: {frames_sent} frames sent in {elapsed:.1f}s ({fps:.1f} fps)")
-                                        last_report_time = current_time
-                                except BrokenPipeError as e:
-                                    print(f"Error: Broken pipe when writing to FFmpeg - {str(e)}")
-                                    self.is_streaming = False
-                                    break
-                                except Exception as e:
-                                    print(f"Error writing frame to FFmpeg: {str(e)}")
+                            # Reset black frame counter when we get a real frame
+                            if black_frame_count > 0:
+                                print(f"Recovered after {black_frame_count} black frames")
+                                black_frame_count = 0
+                                
+                            # Store this frame for potential reuse
+                            self.last_good_frame = frame.copy()
+                            
+                        except queue.Empty:
+                            # Always reuse the last good frame instead of using black frames
+                            if hasattr(self, 'last_good_frame') and self.last_good_frame is not None:
+                                frame = self.last_good_frame
+                                if black_frame_count == 0:
+                                    # First time we're reusing a frame
+                                    black_frame_count += 1
+                                    print("Reusing previous frame due to empty queue")
+                                elif black_frame_count % 60 == 0:
+                                    # Log every 60 frames to avoid spam
+                                    print(f"Still reusing previous frame ({black_frame_count} times)")
+                                else:
+                                    black_frame_count += 1
                             else:
-                                # FFmpeg process has terminated
-                                if self.ffmpeg_process:
-                                    returncode = self.ffmpeg_process.returncode
-                                    stderr_output = self.ffmpeg_process.stderr.read().decode('utf-8', errors='replace')
-                                    print(f"FFmpeg process terminated with return code: {returncode}")
-                                    print("FFmpeg error output:")
-                                    for line in stderr_output.split('\n')[:20]:  # Print first 20 lines
-                                        if line.strip():
-                                            print(f"  {line.strip()}")
+                                # Only use black frame if we have no previous frame at all
+                                # This should only happen on the very first frame
+                                if self.black_frame is None:
+                                    self.black_frame = np.zeros((self.frame_height, self.frame_width, 3), dtype=np.uint8)
+                                frame = self.black_frame
+                                print("Using temporary black frame until first real frame arrives")
+                                # Don't continue - we want to send this frame so FFmpeg starts properly
+                                black_frame_count += 1
+                            
+                        # Write frame to FFmpeg process
+                        if self.ffmpeg_process and self.ffmpeg_process.poll() is None:
+                            try:
+                                self.ffmpeg_process.stdin.write(frame.tobytes())
+                                frames_sent += 1
+                                
+                                # Periodic progress report
+                                current_time = time.time()
+                                if current_time - last_report_time >= 60.0:
+                                    elapsed = current_time - self.stream_start_time
+                                    fps = frames_sent / elapsed if elapsed > 0 else 0
+                                    print(f"Streaming: {frames_sent} frames sent in {elapsed:.1f}s ({fps:.1f} fps)")
+                                    last_report_time = current_time
+                                    
+                                    # Log the frame rate if logger is available
+                                    if self.logger:
+                                        self.logger.log_operation_time('streaming_fps', fps)
+                            except BrokenPipeError as e:
+                                print(f"Error: Broken pipe when writing to FFmpeg - {str(e)}")
                                 self.is_streaming = False
                                 break
-                        except queue.Empty:
-                            # No frames available, just continue
-                            continue
-                        except Exception as e:
-                            print(f"Error in streaming thread: {str(e)}")
+                            except Exception as e:
+                                print(f"Error writing frame to FFmpeg: {str(e)}")
+                                continue
+                        else:
+                            # FFmpeg process terminated
+                            if self.ffmpeg_process:
+                                returncode = self.ffmpeg_process.returncode
+                                stderr_output = self.ffmpeg_process.stderr.read().decode('utf-8', errors='replace')
+                                print(f"FFmpeg process terminated with return code: {returncode}")
+                                print("FFmpeg error output:")
+                                for line in stderr_output.split('\n')[:20]:
+                                    if line.strip():
+                                        print(f"  {line.strip()}")
+                            self.is_streaming = False
+                            break
                 except Exception as e:
                     print(f"Streaming thread exception: {str(e)}")
                 finally:
                     print("Frame processing thread stopped")
                     
-                    # Close FFmpeg process if it's still running
+                    # Clean up FFmpeg process
                     if self.ffmpeg_process and self.ffmpeg_process.poll() is None:
                         try:
                             self.ffmpeg_process.stdin.close()
@@ -200,13 +243,13 @@ class StreamManager:
                         except Exception as e:
                             print(f"Error closing FFmpeg process: {str(e)}")
                             
-                    # Capture any remaining FFmpeg output
+                    # Get any remaining FFmpeg output
                     if self.ffmpeg_process:
                         try:
                             stderr_output = self.ffmpeg_process.stderr.read().decode('utf-8', errors='replace')
                             if stderr_output:
                                 print("FFmpeg final output:")
-                                for line in stderr_output.split('\n')[:20]:  # Print first 20 lines
+                                for line in stderr_output.split('\n')[:20]:
                                     if line.strip():
                                         print(f"  {line.strip()}")
                         except Exception as e:
@@ -272,34 +315,58 @@ class StreamManager:
         return True
             
     def stream_frame(self, frame: np.ndarray) -> bool:
-        """Add a frame to the streaming queue."""
+        """Add a frame to the streaming queue with optimized handling."""
         if not self.is_streaming:
             return False
+        
+        # Initialize black frame if needed (for emergency use)
+        if self.black_frame is None:
+            self.black_frame = np.zeros((self.frame_height, self.frame_width, 3), dtype=np.uint8)
             
-        # Check if frame dimensions match expected dimensions
-        if frame.shape[0] != self.frame_height or frame.shape[1] != self.frame_width:
+        # No rate limiting - send every frame to maximize streaming rate
+        current_time = time.time()
+        self.last_frame_time = current_time
+            
+        # Pre-resized frame optimization - check dimensions only once then use direct path
+        needs_resize = frame.shape[0] != self.frame_height or frame.shape[1] != self.frame_width
+        
+        try:
+            # Check if queue is getting full, if so drop frames to prevent lag
+            if self.frames_queue.qsize() > 240:  # 4 seconds buffer, allow some accumulation
+                # Dropping frames when queue gets too full
+                return True  # Successfully handled (by dropping)
+                
+            # Fast path for correctly sized frames (most common case)
+            if not needs_resize:
+                self.frames_queue.put(frame.copy(), timeout=0.1)  # Use copy to avoid race conditions
+                self.frames_sent += 1
+                
+                # Log the frame for framerate tracking
+                if self.logger:
+                    self.logger.log_stream_frame()
+                
+                return True
+                
+            # Slow path for frames that need resizing
             # Only log a warning every 300 frames to avoid spam
             if self.frames_sent % 300 == 0:
                 print(f"Warning: Frame dimensions ({frame.shape[1]}x{frame.shape[0]}) don't match expected dimensions ({self.frame_width}x{self.frame_height})")
-                print("Frame will be resized to match expected dimensions")
-                
+            
             # Resize the frame to match expected dimensions
-            frame = cv2.resize(frame, (self.frame_width, self.frame_height))
-        
-        try:
-            # Add frame to queue, with a timeout to avoid blocking indefinitely
-            self.frames_queue.put(frame, timeout=0.1)
+            resized_frame = cv2.resize(frame, (self.frame_width, self.frame_height))
+            self.frames_queue.put(resized_frame, timeout=0.1)
             self.frames_sent += 1
             
             # Log the frame for framerate tracking
             if self.logger:
                 self.logger.log_stream_frame()
-                
+            
             return True
+            
         except queue.Full:
             # Queue is full, which means streaming is falling behind
             # This is normal during high CPU load
-            return False
+            return True  # Successfully handled (by dropping)
         except Exception as e:
             print(f"Error adding frame to stream queue: {str(e)}")
             return False

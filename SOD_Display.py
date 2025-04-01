@@ -33,7 +33,6 @@ class DisplayManager:
         
         # Pre-allocated buffers
         self.debug_buffer = None
-        self.debug_mask_3ch = None
         
         # Avoid box state
         self.avoid_boxes = []
@@ -140,64 +139,53 @@ class DisplayManager:
                 self.avoid_start_pos = None
 
     def _compute_space_mask_and_contours(self, boxes: list, frame: np.ndarray) -> tuple:
-        """Compute space mask and contours for visualization."""
-        # Check if we have cached results for the same boxes and frame shape
-        if (hasattr(self, 'last_space_boxes') and 
-            self.last_space_boxes is not None and
-            boxes is not None and
-            len(self.last_space_boxes) == len(boxes) and
-            all(np.array_equal(a, b) for a, b in zip(self.last_space_boxes, boxes)) and
-            hasattr(self, 'last_frame_shape') and 
-            self.last_frame_shape == frame.shape[:2] and
-            self.last_space_mask is not None and 
-            self.last_space_contours is not None):
-            return self.last_space_mask, self.last_space_contours
-            
-        # Create a mask for all space regions
+        """
+        Compute space mask and contours for visualization.
+        
+        NOTE: This is a fallback method that should rarely be called - normally these
+        should be computed by the detection module and passed to the display module.
+        This is only used if the masks/contours are missing for some reason.
+        """
+        # Create a mask for all space regions - no caching, just compute directly
         h, w = frame.shape[:2]
         space_mask = np.zeros((h, w), dtype=np.uint8)
         
-        # Draw all space boxes on the mask - use a more efficient approach
+        # Skip if no boxes
+        if not boxes or len(boxes) == 0:
+            return space_mask, []
+        
+        # Draw all space boxes on the mask
         for box in boxes:
             x1, y1, x2, y2 = map(int, box)
             space_mask[y1:y2, x1:x2] = 255  # Faster than cv2.rectangle for filled rectangles
         
         # Find contours of space regions
-        space_contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # Cache the results
-        self.last_space_boxes = [np.array(box) for box in boxes] if boxes else None
-        self.last_frame_shape = frame.shape[:2]
-        self.last_space_mask = space_mask
-        self.last_space_contours = space_contours
+        space_contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_TC89_L1)
         
         return space_mask, space_contours
 
     def _clear_cached_computations(self):
-        """Clear cached computations when they should be recomputed."""
-        self.last_space_mask = None
-        self.last_space_contours = None
-        self.last_frame_shape = None
+        """Clear any buffers that might need resetting between frames."""
+        # Since we're no longer caching, this is mostly a no-op
+        # Only the buffers are retained between frames for memory efficiency
+        pass
 
     def _ensure_debug_buffers(self, frame_shape: tuple):
         """Ensure debug buffers are allocated with correct dimensions."""
         h, w = frame_shape[:2]
         
-        # Only allocate new buffers if dimensions have changed
+        # Only allocate new buffers if dimensions have changed or buffers don't exist
         if (self.debug_buffer is None or 
             self.debug_buffer.shape[0] != h or 
             self.debug_buffer.shape[1] != w):
-            
-            # Check if we need to print allocation message
-            is_new_allocation = self.debug_buffer is None
-            
             # Allocate new buffers
             self.debug_buffer = np.zeros((h, w, 3), dtype=np.uint8)
-            self.debug_mask_3ch = np.zeros((h, w, 3), dtype=np.uint8)
+        else:
+            # Clear the existing buffer
+            self.debug_buffer.fill(0)
             
-            # Only print message for first allocation, not for resizing
-            if is_new_allocation:
-                print(f"Debug buffers allocated with shape {self.debug_buffer.shape}")
+        # The buffers don't need to be cleared here because they'll be reset in the
+        # specific create_debug_view method with fill(0) or overwritten entirely
 
     def create_debug_message_view(self, message: str) -> np.ndarray:
         """Create a black debug view with centered text message.
@@ -263,73 +251,24 @@ class DisplayManager:
                 
             # Check for no feed case
             if 'nofeed' in self.latest_detections.rcnn_boxes:
-                return self.create_debug_message_view("No \"Space\" regions to analyze currently\n\nTry back soon\n\n\n\nStream Interuppted")
+                return self.create_debug_message_view("No \"Space\" regions to analyze currently\n\nTry back soon\n\n\n\nStream Interrupted")
                 
         # Check if space_data is missing or empty (no space boxes to process)
         if not space_data:
             return self.create_debug_message_view("No \"Space\" regions to analyze currently\n\nTry back soon\n\n\n\n")
             
-        debug_start = time.time()
+        #debug_start = time.time()
         
         # Get data from first entry
         boxes, contours, anomalies, metadata, space_mask, space_contours = space_data[0]
         
-        # Generate a simple hash of the frame for comparison
-        # Use the sum of a downsampled version of the frame for efficiency
-        frame_hash = None
-        if frame is not None:
-            # Downsample the frame to 32x32 for faster hashing
-            small_frame = cv2.resize(frame, (32, 32))
-            frame_hash = small_frame.sum()
-        
-        # Check if we can reuse the previous debug view
-        # This is safe if the frame, space mask, contours, and anomalies are the same
-        if (hasattr(self, 'last_debug_frame_hash') and 
-            frame_hash is not None and
-            self.last_debug_frame_hash == frame_hash and
-            hasattr(self, 'last_debug_view') and 
-            self.last_debug_view is not None and
-            hasattr(self, 'last_debug_space_mask') and 
-            space_mask is not None and 
-            self.last_debug_space_mask is not None and
-            np.array_equal(self.last_debug_space_mask, space_mask) and
-            hasattr(self, 'last_debug_anomalies') and 
-            self.last_debug_anomalies is not None and
-            anomalies is not None and
-            len(self.last_debug_anomalies) == len(anomalies) and
-            all(np.array_equal(np.array(a), np.array(b)) for a, b in zip(self.last_debug_anomalies, anomalies))):
-            
-            # We can reuse the previous debug view
-            self.logger.log_operation_time('debug_view', time.time() - debug_start)
-            # Return a view instead of a copy for better performance
-            return self.last_debug_view
-        
         # Ensure buffers are allocated
         self._ensure_debug_buffers(frame.shape)
         
-        # Reset debug buffer
-        copy_start = time.time()
-        self.debug_buffer.fill(0)
+        # Copy raw frame content for space regions
+        np.copyto(self.debug_buffer, frame, where=space_mask[:, :, None] > 0)
         
-        # Use the space mask from detection results if available, otherwise compute it
-        if space_mask is None:
-            # Fallback to computing space mask if not provided
-            space_mask, space_contours = self._compute_space_mask_and_contours(boxes, frame)
-        
-        # Create 3-channel mask for copying - reuse existing buffer if possible
-        if self.debug_mask_3ch is None or self.debug_mask_3ch.shape != (space_mask.shape[0], space_mask.shape[1], 3):
-            self.debug_mask_3ch = cv2.merge([space_mask, space_mask, space_mask])
-        else:
-            # Reuse existing buffer - faster than cv2.merge
-            self.debug_mask_3ch[:,:,0] = space_mask
-            self.debug_mask_3ch[:,:,1] = space_mask
-            self.debug_mask_3ch[:,:,2] = space_mask
-        
-        # Step 1: Copy raw frame content for space regions (faster than np.where)
-        np.copyto(self.debug_buffer, frame, where=(self.debug_mask_3ch > 0))
-        self.logger.log_operation_time('debug_frame_copy', time.time() - copy_start)
-        
-        space_start = time.time()
+        #space_start = time.time()
         # Step 2: Draw the space region outline (blue)
         cv2.drawContours(self.debug_buffer, space_contours, -1, CLASS_COLORS['space'], 1)  # Reduced thickness to 1
         
@@ -357,9 +296,9 @@ class DisplayManager:
                     cv2.putText(self.debug_buffer, "multi-region", (x1, y1 - 5), 
                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
         
-        self.logger.log_operation_time('debug_space_box', time.time() - space_start)
+        #self.logger.log_operation_time('debug_space_box', time.time() - space_start)
         
-        anomaly_start = time.time()
+        #anomaly_start = time.time()
         # Step 3: Draw detection contours directly on the debug buffer, but only within the space mask
         if contours is not None and len(contours) > 0:
             # Skip creating a new mask - use the existing space_mask directly
@@ -401,14 +340,8 @@ class DisplayManager:
         
         # Avoid boxes are only drawn in the main view, not in debug view
         
-        self.logger.log_operation_time('debug_anomalies', time.time() - anomaly_start)
-        
-        # Cache references to current data for potential reuse (no copies)
-        self.last_debug_view = self.debug_buffer
-        self.last_debug_space_mask = space_mask  # Store reference instead of copy
-        # Fix for issue #3 - avoid array conversions - store the original list
-        self.last_debug_anomalies = anomalies
-        self.last_debug_frame_hash = frame_hash
+        #self.logger.log_operation_time('debug_anomalies', time.time() - anomaly_start)
+        #self.logger.log_operation_time('debug_view', time.time() - debug_start)
         
         return self.debug_buffer
 
@@ -535,7 +468,7 @@ class DisplayManager:
             x, y, w, h = self.current_avoid_box
             cv2.rectangle(self.drawing_buffer, (x, y), (x + w, y + h), AVOID_BOX_COLOR, AVOID_BOX_THICKNESS)
         
-        self.logger.log_operation_time('display_draw', time.time() - draw_start)
+        #self.logger.log_operation_time('display_draw', time.time() - draw_start)
         return self.drawing_buffer
 
     def draw_darkness_overlay(self, frame: np.ndarray, darkness_ratio: float = 0) -> np.ndarray:
@@ -612,23 +545,23 @@ class DisplayManager:
     def create_combined_view(self, frame: np.ndarray, debug: np.ndarray) -> np.ndarray:
         """
         Create a combined view with debug view on left and main view on right.
+        Always returns a padded 1920x1080 frame.
         
         Args:
             frame: The main view frame (annotated with detections)
             debug: The debug view frame
             
         Returns:
-            Combined view with debug on left, main view on right
+            Combined view with debug on left, main view on right, padded to 1920x1080
         """
         try:
             combined_start = time.time()
             
             # Validate inputs
             if frame is None:
-                self.logger.log_error("create_combined_view received None for frame")
-                return None
+                return np.zeros((1080, 1920, 3), dtype=np.uint8)
                 
-            # If no debug view, just return the frame
+            # If no debug view, just return the padded frame
             if debug is None:
                 return self._pad_to_1920x1080(frame)
                 
@@ -659,10 +592,7 @@ class DisplayManager:
                 # Always show the streaming indicator when streaming is active
                 cv2.circle(self.combined_buffer, (30, 30), 15, (0, 0, 255), -1)
             
-            # Log the time taken for creating the combined view (before padding)
-            self.logger.log_operation_time('combined_view', time.time() - combined_start)
-                
-            # Pad the combined buffer to 1920x1080 (this returns a view or buffer we manage)
+            # Pad the combined buffer to 1920x1080
             padded_combined = self._pad_to_1920x1080(self.combined_buffer)
             
             # Only draw avoid box if actively drawing to save processing time
@@ -679,13 +609,9 @@ class DisplayManager:
             if not self.is_streaming and hasattr(self, 'latest_detections') and self.latest_detections is not None:
                 self.draw_space_boxes_on_padded(padded_combined, self.latest_detections)
                 
-            # Log the total time for the combined view creation including padding
-            self.logger.log_operation_time('total_combined_view', time.time() - combined_start)
             return padded_combined
             
         except Exception as e:
-            self.logger.log_error(f"Error in create_combined_view: {str(e)}")
-            
             # Try to return just the frame if possible
             try:
                 if frame is not None:
@@ -694,11 +620,8 @@ class DisplayManager:
                 pass
                 
             # Last resort - return a black frame of the right size
-            try:
-                return np.zeros((1080, 1920, 3), dtype=np.uint8)
-            except:
-                return None
-                
+            return np.zeros((1080, 1920, 3), dtype=np.uint8)
+
     def _pad_to_1920x1080(self, frame: np.ndarray) -> np.ndarray:
         """
         Pad the frame with black bars to achieve 1920x1080 resolution.
@@ -732,7 +655,7 @@ class DisplayManager:
             self.padded_buffer[y_offset:y_offset+h, x_offset:x_offset+w] = frame
             
             # Log the time taken for padding
-            self.logger.log_operation_time('padded_view', time.time() - padded_start)
+            #self.logger.log_operation_time('padded_view', time.time() - padded_start)
             
             return self.padded_buffer
             
@@ -745,70 +668,40 @@ class DisplayManager:
             except:
                 return None
 
-    def pad_for_streaming(self, combined_frame: np.ndarray) -> np.ndarray:
-        """
-        Pad the combined frame with black bars to achieve 1920x1080 resolution for streaming.
-        This preserves the original aspect ratio without distortion.
-        
-        Args:
-            combined_frame: The original combined frame (typically 720x1878)
-            
-        Returns:
-            np.ndarray: Padded frame with 1920x1080 resolution
-        """
-        if combined_frame is None:
-            return np.zeros((1080, 1920, 3), dtype=np.uint8)
-            
-        # Get original dimensions
-        h, w = combined_frame.shape[:2]
-        
-        # Create a black canvas of 1920x1080
-        padded_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        
-        # Calculate centering offsets
-        x_offset = max(0, (1920 - w) // 2)
-        y_offset = max(0, (1080 - h) // 2)
-        
-        # If the combined frame is larger than 1920x1080 in any dimension,
-        # we need to scale it down while preserving aspect ratio
-        if w > 1920 or h > 1080:
-            # Calculate scaling factor
-            scale = min(1920 / w, 1080 / h)
-            new_w = int(w * scale)
-            new_h = int(h * scale)
-            
-            # Resize the frame
-            resized_frame = cv2.resize(combined_frame, (new_w, new_h))
-            
-            # Recalculate centering offsets
-            x_offset = (1920 - new_w) // 2
-            y_offset = (1080 - new_h) // 2
-            
-            # Place the resized frame on the black canvas
-            padded_frame[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized_frame
-        else:
-            # Place the original frame on the black canvas
-            padded_frame[y_offset:y_offset+h, x_offset:x_offset+w] = combined_frame
-            
-        return padded_frame
-
     def update_stream(self, combined_frame: np.ndarray) -> None:
         """Update the RTMP stream with the latest frame."""
         if not self.is_streaming or self.stream_writer is None:
             return
             
-        stream_start = time.time()
-        
         try:
-            # Use padding instead of resizing to maintain aspect ratio
-            padded_frame = self.pad_for_streaming(combined_frame)
-            
-            # Write the padded frame to the stream
-            self.stream_writer.write(padded_frame)
-            
-            self.logger.log_operation_time('stream_write', time.time() - stream_start)
+            # Write the frame directly to the stream since it's already padded
+            self.stream_writer.write(combined_frame)
         except Exception as e:
-            self.logger.log_error(f"Error updating stream: {str(e)}")
+            if hasattr(self, 'logger') and self.logger:
+                self.logger.log_error(f"Error updating stream: {str(e)}")
+
+    def show_frame(self, frame: np.ndarray, rate_limit: int = 1) -> int:
+        """
+        Display the frame in the window, optionally limiting update rate.
+        
+        Args:
+            frame: Frame to display
+            rate_limit: Only update display every rate_limit frames (1=every frame)
+        
+        Returns:
+            Key code from pollKey
+        """
+        # Simple frame counter for rate limiting
+        if not hasattr(self, 'display_counter'):
+            self.display_counter = 0
+        self.display_counter += 1
+        
+        # Only update display if we're on the right frame count
+        if rate_limit <= 1 or self.display_counter % rate_limit == 0:
+            cv2.imshow('ISS Object Detection', frame)
+        
+        # Always check for key input regardless of display update
+        return cv2.pollKey() & 0xFF
 
     def cleanup(self):
         """Clean up any display resources."""
