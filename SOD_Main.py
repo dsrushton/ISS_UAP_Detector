@@ -184,11 +184,31 @@ class SpaceObjectDetectionSystem:
         current_time = time.time()
         should_print = (current_time - self.last_streaming_message_time) >= 60  # Only print once per minute
         
+        if not self.stream:
+            # Create stream manager only when needed
+            self.stream = StreamManager()
+            self.stream.set_software_encoding(True)  # Default to software encoding for maximum compatibility
+            if self.logger:
+                self.stream.set_logger(self.logger)
+        
         if not self.stream.is_streaming:
             # Prompt for stream key if not already set
             if not self.stream.stream_key:
-                # Use hardcoded stream key for testing
-                stream_key = "3qsu-m42f-vp02-9w0r-f42a"  # Hardcoded for testing
+                try:
+                    # Try to import the YouTube stream key from config file
+                    from youtube_config import YOUTUBE_STREAM_KEY
+                    stream_key = YOUTUBE_STREAM_KEY
+                   
+                                  
+                except ImportError:
+                    print("ERROR: YouTube configuration file not found.")
+                    print("Please create a file named 'youtube_config.py' in the same directory with the following content:")
+                    print('"""\nYouTube Streaming Configuration\nStore your YouTube stream key in this file.\n"""\n')
+                    print('# Your YouTube stream key')
+                    print('YOUTUBE_STREAM_KEY = "your-stream-key-here"')
+                    print("\nYou can obtain your stream key from YouTube Studio Dashboard > Live Streaming > Stream key")
+                    return
+                    
                 self.stream.stream_key = stream_key
                 if should_print:
                     print(f"Using stream key: {stream_key[:4]}...{stream_key[-4:]}")
@@ -196,7 +216,10 @@ class SpaceObjectDetectionSystem:
             if should_print:
                 print("\nAttempting to start YouTube stream...")
                 
-            if self.stream.start_streaming(self.stream.frames_queue):
+            # Create frame queue
+            frames_queue = queue.Queue(maxsize=180)  # Buffer for ~5 seconds at 60fps
+                
+            if self.stream.start_streaming(frames_queue):
                 self.display.set_streaming(True)
                 if should_print:
                     print("\nStream started - check YouTube Studio")
