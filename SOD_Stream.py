@@ -84,8 +84,6 @@ class StreamManager:
                     # Add silent audio stream - required by YouTube
                     '-f', 'lavfi',
                     '-i', 'anullsrc=r=44100:cl=mono',
-                    # Add padding to maintain aspect ratio - only vertical padding for wider frames
-                    '-vf', 'scale=-1:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black',
                     '-c:v', 'h264_nvenc',  # Use NVIDIA hardware encoding
                     '-preset', 'p1',       # Low latency preset
                     '-pix_fmt', 'yuv420p', # Required by YouTube
@@ -114,8 +112,6 @@ class StreamManager:
                     # Add silent audio stream - required by YouTube
                     '-f', 'lavfi',
                     '-i', 'anullsrc=r=44100:cl=mono',
-                    # Add padding to maintain aspect ratio - only vertical padding for wider frames
-                    '-vf', 'scale=-1:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black',
                     '-c:v', 'libx264',     # Software encoding
                     '-preset', 'fast',     # Better quality preset (slower than veryfast)
                     '-pix_fmt', 'yuv420p', # Required by YouTube
@@ -326,43 +322,26 @@ class StreamManager:
         # No rate limiting - send every frame to maximize streaming rate
         current_time = time.time()
         self.last_frame_time = current_time
-            
-        # Pre-resized frame optimization - check dimensions only once then use direct path
-        needs_resize = frame.shape[0] != self.frame_height or frame.shape[1] != self.frame_width
-        
+
+        # Frame should already be 1920x1080 from DisplayManager, no resize needed.
+        # needs_resize = frame.shape[0] != self.frame_height or frame.shape[1] != self.frame_width # Removed check
+
         try:
             # Check if queue is getting full, if so drop frames to prevent lag
             if self.frames_queue.qsize() > 240:  # 4 seconds buffer, allow some accumulation
                 # Dropping frames when queue gets too full
                 return True  # Successfully handled (by dropping)
-                
-            # Fast path for correctly sized frames (most common case)
-            if not needs_resize:
-                self.frames_queue.put(frame.copy(), timeout=0.1)  # Use copy to avoid race conditions
-                self.frames_sent += 1
-                
-                # Log the frame for framerate tracking
-                if self.logger:
-                    self.logger.log_stream_frame()
-                
-                return True
-                
-            # Slow path for frames that need resizing
-            # Only log a warning every 300 frames to avoid spam
-            if self.frames_sent % 300 == 0:
-                print(f"Warning: Frame dimensions ({frame.shape[1]}x{frame.shape[0]}) don't match expected dimensions ({self.frame_width}x{self.frame_height})")
-            
-            # Resize the frame to match expected dimensions
-            resized_frame = cv2.resize(frame, (self.frame_width, self.frame_height))
-            self.frames_queue.put(resized_frame, timeout=0.1)
+
+            # Add frame to queue (use copy to avoid race conditions)
+            self.frames_queue.put(frame.copy(), timeout=0.1)
             self.frames_sent += 1
-            
+
             # Log the frame for framerate tracking
             if self.logger:
                 self.logger.log_stream_frame()
-            
+
             return True
-            
+
         except queue.Full:
             # Queue is full, which means streaming is falling behind
             # This is normal during high CPU load

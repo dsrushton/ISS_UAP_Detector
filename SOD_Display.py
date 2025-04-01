@@ -594,21 +594,17 @@ class DisplayManager:
             
             # Pad the combined buffer to 1920x1080
             padded_combined = self._pad_to_1920x1080(self.combined_buffer)
-            
+
             # Only draw avoid box if actively drawing to save processing time
             if self.drawing_avoid_box and self.current_avoid_box:
                 x, y, w, h = self.current_avoid_box
-                
+
                 # Draw on the right half (main view) with adjusted coordinates
-                cv2.rectangle(padded_combined, 
-                             (x + 939 + self.x_padding_offset, y + self.y_padding_offset), 
-                             (x + w + 939 + self.x_padding_offset, y + h + self.y_padding_offset), 
+                cv2.rectangle(padded_combined,
+                             (x + 939 + self.x_padding_offset, y + self.y_padding_offset),
+                             (x + w + 939 + self.x_padding_offset, y + h + self.y_padding_offset),
                              AVOID_BOX_COLOR, AVOID_BOX_THICKNESS)
-            
-            # Skip drawing space boxes on padded frame when streaming to save processing time
-            if not self.is_streaming and hasattr(self, 'latest_detections') and self.latest_detections is not None:
-                self.draw_space_boxes_on_padded(padded_combined, self.latest_detections)
-                
+
             return padded_combined
             
         except Exception as e:

@@ -231,47 +231,42 @@ class SpaceObjectDetector:
             dark_threshold = self.dark_region_threshold
             min_brightness = self.min_object_brightness
             morph_size = self.morph_kernel_size
-            
-            # Create a dark mask to identify black regions within the space box
+
+            # --- Hybrid Masking Logic Start ---
             mask_start = time.time()
-            blurred = cv2.GaussianBlur(roi_max, (blur_size, blur_size), 0)
-            
-            # Create dark mask using direct thresholding
-            _, dark_mask = cv2.threshold(blurred, dark_threshold, 255, cv2.THRESH_BINARY_INV)
-            
-            # Apply morphological operations to clean up the dark mask
+
+            # Optional: Gaussian Blur (Uncomment roi_blurred = roi_max line if removing blur)
+            # Apply Gaussian Blur to reduce noise before thresholding
+            #roi_blurred = cv2.GaussianBlur(roi_max, (blur_size, blur_size), 0)
+            roi_blurred = roi_max # Use this line if skipping GaussianBlur
+
+            # 1. Create Dark Mask: Identify initial dark regions
+            _, dark_mask_initial = cv2.threshold(roi_blurred, dark_threshold, 255, cv2.THRESH_BINARY_INV)
             kernel = np.ones((morph_size, morph_size), np.uint8)
-            dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_OPEN, kernel)
-            
-            # Limit dark mask to space region
-            dark_mask = cv2.bitwise_and(dark_mask, roi_mask)
-            
-            # Find contours in the dark mask to identify black regions
-            dark_contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            # Create a refined space mask that only includes dark regions
-            refined_mask = np.zeros_like(roi_mask)
-            cv2.drawContours(refined_mask, dark_contours, -1, 255, -1)
-            
-            # If no dark regions found, fall back to the original space mask
-            if cv2.countNonZero(refined_mask) < 100:  # Minimum area threshold
-                refined_mask = roi_mask
-                
-            # Create bright mask using direct thresholding
-            _, bright_mask = cv2.threshold(blurred, min_brightness, 255, cv2.THRESH_BINARY)
-            
-            # Apply morphological operations to clean up the bright mask
-            bright_mask = cv2.morphologyEx(bright_mask, cv2.MORPH_DILATE, kernel)
-            
-            # Limit bright mask to refined space region (dark areas within space box)
-            bright_mask = cv2.bitwise_and(bright_mask, refined_mask)
-            
-            #self.logger.log_operation_time('mask_creation', time.time() - mask_start)
-            
-            # Find contours directly on the bright mask
+            dark_mask_opened = cv2.morphologyEx(dark_mask_initial, cv2.MORPH_OPEN, kernel)
+            dark_mask_final = cv2.bitwise_and(dark_mask_opened, roi_mask) # Limit to original space region
+
+            # 2. Create Precise Dark Region Mask from Contours
+            dark_contours, _ = cv2.findContours(dark_mask_final, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            dark_region_mask = np.zeros_like(roi_mask) # Start with black canvas
+            cv2.drawContours(dark_region_mask, dark_contours, -1, 255, -1) # Fill contours
+
+            # 3. Create Bright Mask: Identify bright pixels
+            _, bright_mask_initial = cv2.threshold(roi_blurred, min_brightness, 255, cv2.THRESH_BINARY)
+            bright_mask_dilated = cv2.morphologyEx(bright_mask_initial, cv2.MORPH_DILATE, kernel)
+            # Note: bright_mask is not limited to roi_mask here
+
+            # 4. Final Search Mask: Find bright pixels within the precise dark regions
+            final_search_mask = cv2.bitwise_and(bright_mask_dilated, dark_region_mask)
+
+            # --- Hybrid Masking Logic End ---
+
+            # self.logger.log_operation_time('mask_creation', time.time() - mask_start)
+
+            # Find contours directly on the final search mask
             contour_start = time.time()
-            contours, _ = cv2.findContours(bright_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
+            contours, _ = cv2.findContours(final_search_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
             # Limit number of contours processed
             if len(contours) > self.max_contours_per_frame:
                 contours = sorted(contours, key=cv2.contourArea, reverse=True)[:self.max_contours_per_frame]
@@ -299,7 +294,7 @@ class SpaceObjectDetector:
                 x, y, w, h = cv2.boundingRect(contour)
                 
                 # Check if contour has enough points to be valid
-                if len(contour) < 3:  # Minimum 3 points needed for a valid contour
+                if len(contour) < 10:  # Minimum 3 points needed for a valid contour
                     continue
                 
                 # Ultra-fast size check before any other processing
@@ -312,7 +307,7 @@ class SpaceObjectDetector:
                 abs_y = y + y1
                 
                 # Create binary mask for exact object boundaries
-                obj_mask = np.zeros_like(bright_mask)
+                obj_mask = np.zeros_like(final_search_mask)
                 cv2.drawContours(obj_mask, [contour], -1, 255, -1)
                 
                 # Check if object passes brightness and contrast requirements first
@@ -576,21 +571,21 @@ class SpaceObjectDetector:
             is_rcnn_frame = (self.frame_count % self.rcnn_cycle) == 0
             results = DetectionResults(frame_number=self.frame_count)
             
-            # Check for "No Feed" text using specific pixel detection
-            # if self.is_no_feed_frame(frame):
-            #     results.rcnn_boxes['nofeed'] = [(0, 0, frame.shape[1], frame.shape[0])]
-            #     results.metadata['nofeed_detected_by_pixel'] = True
-            #     return results
+            # Store test frame status
+            self.is_test_frame = is_test_frame
+            results.metadata['test_frame'] = is_test_frame
             
             # Run RCNN on regular cycle OR if this is a test frame
             if is_rcnn_frame or is_test_frame:
                 # Instead of running RCNN synchronously, push it to the queue
                 try:
-                    # RCNN processing won't modify the frame, so safe to pass without copying
-                    self.rcnn_queue.put_nowait(frame)
-                    results.metadata['rcnn_frame'] = True
-                    if is_test_frame:
-                        results.metadata['test_frame'] = True
+                    # Only send new frames if queue isn't full
+                    if not self.rcnn_queue.full():
+                        self.rcnn_queue.put_nowait(frame)
+                        results.metadata['rcnn_frame'] = True
+                    else:
+                        results.metadata['rcnn_frame'] = False
+                        results.metadata['rcnn_queue_full'] = True
                 except Exception:
                     results.metadata['rcnn_frame'] = False
             
@@ -618,7 +613,7 @@ class SpaceObjectDetector:
                 if self.cached_darkness_detected:
                     results.metadata['darkness_area_ratio'] = self.cached_darkness_area_ratio
             
-            # Check for darkness or no feed from RCNN
+            # Quick exit for darkness or no feed cases
             if results.darkness_detected or 'nofeed' in results.rcnn_boxes:
                 return results
             
@@ -629,70 +624,79 @@ class SpaceObjectDetector:
                     results.metadata['skip_save'] = 'too_many_lens_flares'
             
             # Only proceed with anomaly detection if we have a space region
-            if 'space' in results.rcnn_boxes:
+            if 'space' in results.rcnn_boxes and results.rcnn_boxes['space']:
                 # Get all space boxes and combine overlapping ones
                 space_boxes = self._combine_overlapping_boxes(results.rcnn_boxes['space'])
                 
+                # Skip processing if no valid space boxes
+                if not space_boxes:
+                    return results
+                    
                 # Sort combined boxes by y1 coordinate (highest first)
                 space_boxes = sorted(space_boxes, key=lambda box: box[1])
                 
                 # Store the combined box for display and processing
-                results.space_box = space_boxes[0]  # Main combined box for display
-                results.metadata['all_space_boxes'] = space_boxes  # Store all boxes for reference
+                if space_boxes:
+                    results.space_box = space_boxes[0]  # Main combined box for display
+                    results.metadata['all_space_boxes'] = space_boxes  # Store all boxes for reference
                 
-                # Update cached border data if this is an RCNN frame or if boxes have changed
-                if is_rcnn_frame or is_test_frame or not self._are_space_boxes_same(space_boxes):
-                    border_update_start = time.time()
-                    self._update_cached_border_data(frame, space_boxes)
-                    self.last_border_update_frame = self.frame_count
+                    # Update cached border data if this is an RCNN frame or if boxes have changed
+                    space_boxes_changed = not self._are_space_boxes_same(space_boxes)
                     
-                    #if is_rcnn_frame:
-                       # self.logger.log_operation_time('border_data_update', time.time() - border_update_start)
-                
-                # Track all anomalies and metrics
-                all_anomalies = []
-                all_metrics = []
-                
-                # Process the main combined space box using cached border data
-                box_results = self.detect_anomalies(frame, space_boxes, avoid_boxes)
-                
-                # Store all results from the combined box
-                if box_results.anomalies:
-                    all_anomalies.extend(box_results.anomalies)
-                    if 'anomaly_metrics' in box_results.metadata:
-                        all_metrics.extend(box_results.metadata['anomaly_metrics'])
-                
-                # Store contours from the combined box
-                results.contours = box_results.contours
-                
-                # Store space mask and contours from the combined box
-                results.space_mask = box_results.space_mask
-                results.space_contours = box_results.space_contours
-                
-                # Process additional space boxes if they don't overlap with the main one
-                for space_box in space_boxes[1:]:
-                    # Check if this box overlaps with the main box
-                    main_x1, main_y1, main_x2, main_y2 = results.space_box
-                    x1, y1, x2, y2 = space_box
+                    if is_rcnn_frame or is_test_frame or space_boxes_changed:
+                        self._update_cached_border_data(frame, space_boxes)
+                        self.last_border_update_frame = self.frame_count
                     
-                    # If boxes don't overlap, process this one too
-                    if (x2 < main_x1 or x1 > main_x2 or 
-                        y2 < main_y1 or y1 > main_y2):
-                        # Pass the space box as a list to avoid 'numpy.int32' object is not iterable error
-                        box_results = self.detect_anomalies(frame, [space_box], avoid_boxes)
-                        if box_results.anomalies:
-                            all_anomalies.extend(box_results.anomalies)
-                            if 'anomaly_metrics' in box_results.metadata:
-                                all_metrics.extend(box_results.metadata['anomaly_metrics'])
-                
-                # Update final results
-                results.anomalies = all_anomalies
-                results.metadata['anomaly_metrics'] = all_metrics
+                    # Track all anomalies and metrics
+                    all_anomalies = []
+                    all_metrics = []
+                    
+                    # Process the main combined space box using cached border data
+                    box_results = self.detect_anomalies(frame, space_boxes, avoid_boxes)
+                    
+                    # Store all results from the combined box
+                    if box_results.anomalies:
+                        all_anomalies.extend(box_results.anomalies)
+                        if 'anomaly_metrics' in box_results.metadata:
+                            all_metrics.extend(box_results.metadata['anomaly_metrics'])
+                    
+                    # Store contours from the combined box
+                    results.contours = box_results.contours
+                    
+                    # Store space mask and contours from the combined box
+                    results.space_mask = box_results.space_mask
+                    results.space_contours = box_results.space_contours
+                    
+                    # Only process additional space boxes if:
+                    # 1. There's more than one space box
+                    # 2. No anomalies were found yet (optimization)
+                    if len(space_boxes) > 1 and not all_anomalies:
+                        # Process additional space boxes if they don't overlap with the main one
+                        for space_box in space_boxes[1:]:
+                            # Check if this box overlaps with the main box
+                            main_x1, main_y1, main_x2, main_y2 = results.space_box
+                            x1, y1, x2, y2 = space_box
+                            
+                            # If boxes don't overlap, process this one too
+                            if (x2 < main_x1 or x1 > main_x2 or 
+                                y2 < main_y1 or y1 > main_y2):
+                                # Pass the space box as a list to avoid 'numpy.int32' object is not iterable error
+                                box_results = self.detect_anomalies(frame, [space_box], avoid_boxes)
+                                if box_results.anomalies:
+                                    all_anomalies.extend(box_results.anomalies)
+                                    if 'anomaly_metrics' in box_results.metadata:
+                                        all_metrics.extend(box_results.metadata['anomaly_metrics'])
+                    
+                    # Update final results
+                    results.anomalies = all_anomalies
+                    results.metadata['anomaly_metrics'] = all_metrics
             
             return results
             
         except Exception as e:
             print(f"Error processing frame: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def cleanup(self):

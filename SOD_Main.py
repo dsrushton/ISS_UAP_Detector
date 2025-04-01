@@ -363,18 +363,9 @@ class SpaceObjectDetectionSystem:
             
             # Stream frame if streaming is active
             if self.stream and self.stream.is_streaming:
-                # Only resize if dimensions don't match to avoid unnecessary CPU usage
-                if combined_frame.shape[1] != self.stream.frame_width or combined_frame.shape[0] != self.stream.frame_height:
-                    # Use a faster interpolation method for streaming since quality is less critical
-                    stream_frame = cv2.resize(combined_frame, 
-                                             (self.stream.frame_width, self.stream.frame_height),
-                                             interpolation=cv2.INTER_NEAREST)
-                else:
-                    # Pass the frame directly without copying if dimensions already match
-                    stream_frame = combined_frame
-                    
-                # Send the frame to the stream manager (no need to copy, StreamManager handles this)
-                self.stream.stream_frame(stream_frame)
+                # The combined_frame is always 1920x1080 due to padding in DisplayManager,
+                # matching the expected stream dimensions, so no resize is needed here.
+                self.stream.stream_frame(combined_frame)
             
             # Display the combined frame using DisplayManager with optional rate limiting
             # Only display every X frames to reduce display overhead (e.g., 2 = 30fps display at 60fps processing)
