@@ -51,7 +51,7 @@ class SpaceObjectDetectionSystem:
         from SOD_Capture import CaptureManager
         
         self.detector = SpaceObjectDetector()
-        self.display = DisplayManager()
+        self.display = None  # Will be initialized later
         self.capture = CaptureManager()
         self.logger = None  # Will be initialized in initialize()
         self.console = None  # Will be initialized later
@@ -106,6 +106,8 @@ class SpaceObjectDetectionSystem:
             self.video = VideoManager(self.logger)
             
             # Set up display manager
+            from SOD_Display import DisplayManager
+            self.display = DisplayManager()
             self.display.set_logger(self.logger)
             
             # Set up detector
@@ -182,11 +184,31 @@ class SpaceObjectDetectionSystem:
         current_time = time.time()
         should_print = (current_time - self.last_streaming_message_time) >= 60  # Only print once per minute
         
+        if not self.stream:
+            # Create stream manager only when needed
+            self.stream = StreamManager()
+            self.stream.set_software_encoding(True)  # Default to software encoding for maximum compatibility
+            if self.logger:
+                self.stream.set_logger(self.logger)
+        
         if not self.stream.is_streaming:
             # Prompt for stream key if not already set
             if not self.stream.stream_key:
-                # Use hardcoded stream key for testing
-                stream_key = "3qsu-m42f-vp02-9w0r-f42a"  # Hardcoded for testing
+                try:
+                    # Try to import the YouTube stream key from config file
+                    from youtube_config import YOUTUBE_STREAM_KEY
+                    stream_key = YOUTUBE_STREAM_KEY
+                   
+                                  
+                except ImportError:
+                    print("ERROR: YouTube configuration file not found.")
+                    print("Please create a file named 'youtube_config.py' in the same directory with the following content:")
+                    print('"""\nYouTube Streaming Configuration\nStore your YouTube stream key in this file.\n"""\n')
+                    print('# Your YouTube stream key')
+                    print('YOUTUBE_STREAM_KEY = "your-stream-key-here"')
+                    print("\nYou can obtain your stream key from YouTube Studio Dashboard > Live Streaming > Stream key")
+                    return
+                    
                 self.stream.stream_key = stream_key
                 if should_print:
                     print(f"Using stream key: {stream_key[:4]}...{stream_key[-4:]}")
@@ -194,7 +216,10 @@ class SpaceObjectDetectionSystem:
             if should_print:
                 print("\nAttempting to start YouTube stream...")
                 
-            if self.stream.start_streaming(self.stream.frames_queue):
+            # Create frame queue
+            frames_queue = queue.Queue(maxsize=180)  # Buffer for ~5 seconds at 60fps
+                
+            if self.stream.start_streaming(frames_queue):
                 self.display.set_streaming(True)
                 if should_print:
                     print("\nStream started - check YouTube Studio")
@@ -345,7 +370,10 @@ class SpaceObjectDetectionSystem:
             # are saved with incremented suffixes (-a, -b, -c, etc.)
             elif has_detection and self.video and self.video.recording and self.capture:
                 # Only process if we're within the POST_DETECTION_SECONDS window
-                # but after the SAVE_INTERVAL to avoid saving frames too frequently
+                # but after the SAVE_s     fv
+                # 
+                # 
+                # VAL to avoid saving frames too frequently
                 current_time = time.time()
                 if (self.video.frames_since_detection / self.fps < POST_DETECTION_SECONDS and 
                     current_time - self.capture.last_save_time >= SAVE_INTERVAL):
@@ -358,16 +386,14 @@ class SpaceObjectDetectionSystem:
             
             # Stream frame if streaming is active
             if self.stream and self.stream.is_streaming:
-                # Resize the combined frame to match the expected dimensions for streaming
-                if combined_frame.shape[1] != self.stream.frame_width or combined_frame.shape[0] != self.stream.frame_height:
-                    stream_frame = cv2.resize(combined_frame, (self.stream.frame_width, self.stream.frame_height))
-                else:
-                    stream_frame = combined_frame
-                # Send the frame to the stream manager
-                self.stream.stream_frame(stream_frame)
+                # The combined_frame is always 1920x1080 due to padding in DisplayManager,
+                # matching the expected stream dimensions, so no resize is needed here.
+                self.stream.stream_frame(combined_frame)
             
-            # Display the combined frame in a single window
-            cv2.imshow('ISS Object Detection', combined_frame)
+            # Display the combined frame using DisplayManager with optional rate limiting
+            # Only display every X frames to reduce display overhead (e.g., 2 = 30fps display at 60fps processing)
+            display_rate = 1  # Set to 1 for every frame, 2 for every other frame, etc.
+            key = self.display.show_frame(combined_frame, rate_limit=display_rate)
             
             # Update frame count
             self.frame_count += 1
@@ -385,8 +411,7 @@ class SpaceObjectDetectionSystem:
                     self.capture.save_raw_frame(frame)
                 self.burst_remaining -= 1
             
-            # Use a 1ms timeout for key checks to minimize display latency
-            key = cv2.pollKey() & 0xFF  # Non-blocking key check instead of waitKey(1)
+            # Process key commands
             if key == ord('q'):
                 print("\nQuitting...")
                 self._cleanup()
@@ -497,20 +522,17 @@ class SpaceObjectDetectionSystem:
 
     def _setup_display(self):
         """Set up display windows and callbacks."""
-        cv2.namedWindow('ISS Object Detection', cv2.WINDOW_NORMAL)
-        # Set a fixed window size to match our 1920x1080 padded output
-        cv2.resizeWindow('ISS Object Detection', 1920, 1080)
-        cv2.setMouseCallback('ISS Object Detection', self.display._mouse_callback)
+        # Note: Window initialization and callbacks are now handled by DisplayManager
+        # This method now just ensures the DisplayManager is properly referenced
         
-        # Create a blank initial frame to ensure the window is visible
-        blank_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        # Add text to the blank frame
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(blank_frame, 'Initializing...', (int(1920/2) - 200, int(1080/2)), 
-                    font, 2, (255, 255, 255), 3, cv2.LINE_AA)
-        cv2.imshow('ISS Object Detection', blank_frame)
-        # Force window to update and be visible
-        cv2.waitKey(1)
+        # Check if display manager needs initialization
+        if not self.display:
+            from SOD_Display import DisplayManager
+            self.display = DisplayManager()
+            
+        # Make sure the display has a logger reference
+        if self.logger:
+            self.display.set_logger(self.logger)
 
     def process_video_stream(self, source: str, is_youtube: bool = False) -> None:
         """Process video stream from source."""

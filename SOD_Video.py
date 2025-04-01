@@ -65,7 +65,9 @@ class ThreadedVideoWriter:
             return False
             
         try:
-            self.frame_queue.put(frame.copy(), block=False)
+            # Pass frame directly - no need to copy since the frame is only used for writing
+            # and won't be modified by the writer thread
+            self.frame_queue.put(frame, block=False)
             return True
         except queue.Full:
             return False
@@ -78,7 +80,8 @@ class ThreadedVideoWriter:
             while self.is_running:
                 try:
                     # Get frame from queue with timeout
-                    frame = self.frame_queue.get(timeout=1.0)
+                    # Using 0.5s timeout as a balance between responsiveness and reduced CPU usage
+                    frame = self.frame_queue.get(timeout=0.5)
                     
                     # Write frame
                     if self.writer and frame is not None:
@@ -208,7 +211,7 @@ class VideoManager:
         
         # Validate input
         if combined_view is None:
-            self.logger.log_error("Received None frame in add_to_buffer")
+            #self.logger.log_error("Received None frame in add_to_buffer")
             return
             
         try:
