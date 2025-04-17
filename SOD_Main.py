@@ -186,7 +186,7 @@ class SpaceObjectDetectionSystem:
             # Prompt for stream key if not already set
             if not self.stream.stream_key:
                 # Use hardcoded stream key for testing
-                stream_key = "3qsu-m42f-vp02-9w0r-f42a"  # Hardcoded for testing
+                stream_key = "3qsu-m42f-vp02-9w0r-f42a"  # Don't @ me. Been fixed.
                 self.stream.stream_key = stream_key
                 if should_print:
                     print(f"Using stream key: {stream_key[:4]}...{stream_key[-4:]}")
