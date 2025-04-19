@@ -194,6 +194,7 @@ class SpaceObjectDetectionSystem:
         if not self.stream.is_streaming:
             # Prompt for stream key if not already set
             if not self.stream.stream_key:
+
                 try:
                     # Try to import the YouTube stream key from config file
                     from youtube_config import YOUTUBE_STREAM_KEY
