@@ -31,7 +31,7 @@ class Constants:
         self.DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Filter Box Controls
-        self.FILTER_ISS = True
+        self.FILTER_ISS = False
         self.FILTER_PANEL = True
         self.FILTER_LF = True
 
@@ -107,25 +107,25 @@ class Constants:
         self.MAX_RCNN_BOXES = 10
 
         # Anomaly Detection Parameters
-        self.MIN_OBJECT_BRIGHTNESS = 20
-        self.MAX_OBJECT_BRIGHTNESS = 240
+        self.MIN_OBJECT_BRIGHTNESS = 10 
+        self.MAX_OBJECT_BRIGHTNESS = 108
         self.GAUSSIAN_BLUR_SIZE = 5      # Size of Gaussian blur kernel (must be odd)
         self.MORPH_KERNEL_SIZE = 2       # Size of morphological operation kernel
         self.MAX_BG_BRIGHTNESS = 23
-        self.MIN_CONTRAST = 18
-        self.MIN_CONTOUR_DIMENSION = 3   # Minimum width/height for contours
-        self.MAX_CONTOUR_WIDTH = 100
-        self.MAX_CONTOUR_HEIGHT = 100
-        self.MIN_CONTOUR_AREA = 36
+        self.MIN_CONTRAST = 23
+        self.MIN_CONTOUR_DIMENSION = 5   # Minimum width/height for contours
+        self.MAX_CONTOUR_WIDTH = 150
+        self.MAX_CONTOUR_HEIGHT = 150
+        self.MIN_CONTOUR_AREA = 25
         self.MAX_ASPECT_RATIO = 20.0
-        self.DARK_REGION_THRESHOLD = 30  # Maximum brightness for dark region detection
+        self.DARK_REGION_THRESHOLD = 10  # Maximum brightness for dark region detection
 
         # Sliding Window Parameters
         self.MIN_DARK_REGION_SIZE = 100
 
         # Filtering Options
-        self.BORDER_MARGIN = 5  # How many pixels from space box border to consider "touching"
-        self.MAX_VALID_DETECTIONS = 4  # Maximum number of valid detections per frame
+        self.BORDER_MARGIN = 3  # How many pixels from space box border to consider "touching"
+        self.MAX_VALID_DETECTIONS = 3  # Maximum number of valid detections per frame
         self.MAX_CONTOURS_PER_FRAME = 10  # Maximum number of contours to process per frame
 
         # Display Parameters

@@ -51,7 +51,7 @@ class SpaceObjectDetectionSystem:
         from SOD_Capture import CaptureManager
         
         self.detector = SpaceObjectDetector()
-        self.display = DisplayManager()
+        self.display = None  # Will be initialized later
         self.capture = CaptureManager()
         self.logger = None  # Will be initialized in initialize()
         self.console = None  # Will be initialized later
@@ -106,6 +106,8 @@ class SpaceObjectDetectionSystem:
             self.video = VideoManager(self.logger)
             
             # Set up display manager
+            from SOD_Display import DisplayManager
+            self.display = DisplayManager()
             self.display.set_logger(self.logger)
             
             # Set up detector
@@ -182,11 +184,32 @@ class SpaceObjectDetectionSystem:
         current_time = time.time()
         should_print = (current_time - self.last_streaming_message_time) >= 60  # Only print once per minute
         
+        if not self.stream:
+            # Create stream manager only when needed
+            self.stream = StreamManager()
+            self.stream.set_software_encoding(True)  # Default to software encoding for maximum compatibility
+            if self.logger:
+                self.stream.set_logger(self.logger)
+        
         if not self.stream.is_streaming:
             # Prompt for stream key if not already set
             if not self.stream.stream_key:
-                # Use hardcoded stream key for testing
-                stream_key = "3qsu-m42f-vp02-9w0r-f42a"  # Don't @ me. Been fixed.
+
+                try:
+                    # Try to import the YouTube stream key from config file
+                    from youtube_config import YOUTUBE_STREAM_KEY
+                    stream_key = YOUTUBE_STREAM_KEY
+                   
+                                  
+                except ImportError:
+                    print("ERROR: YouTube configuration file not found.")
+                    print("Please create a file named 'youtube_config.py' in the same directory with the following content:")
+                    print('"""\nYouTube Streaming Configuration\nStore your YouTube stream key in this file.\n"""\n')
+                    print('# Your YouTube stream key')
+                    print('YOUTUBE_STREAM_KEY = "your-stream-key-here"')
+                    print("\nYou can obtain your stream key from YouTube Studio Dashboard > Live Streaming > Stream key")
+                    return
+                    
                 self.stream.stream_key = stream_key
                 if should_print:
                     print(f"Using stream key: {stream_key[:4]}...{stream_key[-4:]}")
@@ -194,7 +217,10 @@ class SpaceObjectDetectionSystem:
             if should_print:
                 print("\nAttempting to start YouTube stream...")
                 
-            if self.stream.start_streaming(self.stream.frames_queue):
+            # Create frame queue
+            frames_queue = queue.Queue(maxsize=180)  # Buffer for ~5 seconds at 60fps
+                
+            if self.stream.start_streaming(frames_queue):
                 self.display.set_streaming(True)
                 if should_print:
                     print("\nStream started - check YouTube Studio")
@@ -203,7 +229,6 @@ class SpaceObjectDetectionSystem:
             else:
                 if should_print:
                     print("\nFailed to start streaming - check console for details")
-                    print("Press 'i' to run streaming troubleshooting")
                     self.last_streaming_message_time = current_time
         else:
             if should_print:
@@ -295,10 +320,19 @@ class SpaceObjectDetectionSystem:
             
             # Create debug view if needed
             debug_view = None
-            if 'space' in detections.rcnn_boxes:
+            
+            # Check for special cases first (darkness, no feed, no space)
+            if detections.darkness_detected or 'nofeed' in detections.rcnn_boxes:
+                # For darkness or no feed, create a debug message view
+                # The create_debug_view method now handles these cases automatically
+                debug_view = self.display.create_debug_view(frame, [])
+            elif 'space' in detections.rcnn_boxes:
+                # Normal case with space regions
                 space_data = []
+                # Use combined space boxes from metadata if available, otherwise use raw RCNN boxes
+                space_boxes = detections.metadata.get('all_space_boxes', detections.rcnn_boxes['space'])
                 space_data.append((
-                    detections.rcnn_boxes['space'],
+                    space_boxes,
                     detections.contours,
                     detections.anomalies,
                     detections.metadata,
@@ -306,6 +340,10 @@ class SpaceObjectDetectionSystem:
                     detections.space_contours if hasattr(detections, 'space_contours') else None
                 ))
                 debug_view = self.display.create_debug_view(frame, space_data)
+            else:
+                # No space regions found
+                debug_view = self.display.create_debug_view(frame, [])
+            
             self.logger.log_operation_time('debug_view', time.time() - display_start)
             
             # Create combined view
@@ -333,7 +371,10 @@ class SpaceObjectDetectionSystem:
             # are saved with incremented suffixes (-a, -b, -c, etc.)
             elif has_detection and self.video and self.video.recording and self.capture:
                 # Only process if we're within the POST_DETECTION_SECONDS window
-                # but after the SAVE_INTERVAL to avoid saving frames too frequently
+                # but after the SAVE_s     fv
+                # 
+                # 
+                # VAL to avoid saving frames too frequently
                 current_time = time.time()
                 if (self.video.frames_since_detection / self.fps < POST_DETECTION_SECONDS and 
                     current_time - self.capture.last_save_time >= SAVE_INTERVAL):
@@ -346,16 +387,14 @@ class SpaceObjectDetectionSystem:
             
             # Stream frame if streaming is active
             if self.stream and self.stream.is_streaming:
-                # Resize the combined frame to match the expected dimensions for streaming
-                if combined_frame.shape[1] != self.stream.frame_width or combined_frame.shape[0] != self.stream.frame_height:
-                    stream_frame = cv2.resize(combined_frame, (self.stream.frame_width, self.stream.frame_height))
-                else:
-                    stream_frame = combined_frame
-                # Send the frame to the stream manager
-                self.stream.stream_frame(stream_frame)
+                # The combined_frame is always 1920x1080 due to padding in DisplayManager,
+                # matching the expected stream dimensions, so no resize is needed here.
+                self.stream.stream_frame(combined_frame)
             
-            # Display the combined frame in a single window
-            cv2.imshow('ISS Object Detection', combined_frame)
+            # Display the combined frame using DisplayManager with optional rate limiting
+            # Only display every X frames to reduce display overhead (e.g., 2 = 30fps display at 60fps processing)
+            display_rate = 1  # Set to 1 for every frame, 2 for every other frame, etc.
+            key = self.display.show_frame(combined_frame, rate_limit=display_rate)
             
             # Update frame count
             self.frame_count += 1
@@ -373,8 +412,7 @@ class SpaceObjectDetectionSystem:
                     self.capture.save_raw_frame(frame)
                 self.burst_remaining -= 1
             
-            # Use a 1ms timeout for key checks to minimize display latency
-            key = cv2.waitKey(1) & 0xFF
+            # Process key commands
             if key == ord('q'):
                 print("\nQuitting...")
                 self._cleanup()
@@ -404,23 +442,8 @@ class SpaceObjectDetectionSystem:
                 if self.display:
                     self.display.avoid_boxes = []  # Clear avoid boxes
                     print("\nCleared avoid boxes")
-            elif key == ord('s') or key == ord('1'):
+            elif key == ord('s'):
                 self.toggle_streaming()
-            elif key == ord('2'):
-                # Run streaming troubleshooting
-                print("\nTroubleshooting key pressed - running diagnostics...")
-                if hasattr(self, 'stream') and self.stream:
-                    self.stream.troubleshoot_streaming()
-            elif key == ord('4'):
-                # Start burst capture
-                if hasattr(self, 'capture') and self.capture:
-                    self.capture.start_burst_capture()
-                    print("\nStarted burst capture mode")
-            elif key == ord('5'):
-                # Pause capture for 5 seconds
-                if hasattr(self, 'capture') and self.capture:
-                    self.capture.pause_capture()
-                    print("\nPaused capture for 5 seconds")
             
             return True
             
@@ -486,6 +509,9 @@ class SpaceObjectDetectionSystem:
             if self.stream is None:
                 # Always use 1920x1080 for stream dimensions to match our padded output
                 self.stream = StreamManager(frame_width=1920, frame_height=1080)
+                # Set the logger reference
+                if hasattr(self, 'logger') and self.logger:
+                    self.stream.set_logger(self.logger)
                 print("Stream manager initialized with fixed 1920x1080 dimensions")
             
             print("Successfully connected to video source")
@@ -497,20 +523,17 @@ class SpaceObjectDetectionSystem:
 
     def _setup_display(self):
         """Set up display windows and callbacks."""
-        cv2.namedWindow('ISS Object Detection', cv2.WINDOW_NORMAL)
-        # Set a fixed window size to match our 1920x1080 padded output
-        cv2.resizeWindow('ISS Object Detection', 1920, 1080)
-        cv2.setMouseCallback('ISS Object Detection', self.display._mouse_callback)
+        # Note: Window initialization and callbacks are now handled by DisplayManager
+        # This method now just ensures the DisplayManager is properly referenced
         
-        # Create a blank initial frame to ensure the window is visible
-        blank_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        # Add text to the blank frame
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(blank_frame, 'Initializing...', (int(1920/2) - 200, int(1080/2)), 
-                    font, 2, (255, 255, 255), 3, cv2.LINE_AA)
-        cv2.imshow('ISS Object Detection', blank_frame)
-        # Force window to update and be visible
-        cv2.waitKey(1)
+        # Check if display manager needs initialization
+        if not self.display:
+            from SOD_Display import DisplayManager
+            self.display = DisplayManager()
+            
+        # Make sure the display has a logger reference
+        if self.logger:
+            self.display.set_logger(self.logger)
 
     def process_video_stream(self, source: str, is_youtube: bool = False) -> None:
         """Process video stream from source."""
@@ -521,7 +544,7 @@ class SpaceObjectDetectionSystem:
         self._setup_display()
         self.is_running = True
         
-        # Get the frame rate for timing control
+        # Get the frame rate for timing calculations and video manager
         fps = self.cap.get(cv2.CAP_PROP_FPS)
         if fps <= 0 or fps > 120:  # Sanity check
             fps = 60.0  # Default to 60 fps if invalid
@@ -529,80 +552,59 @@ class SpaceObjectDetectionSystem:
             
         # Update the system FPS
         self.fps = fps
-            
+        
         # Set the FPS for the video manager to ensure proper buffer size
         print(f"Setting video manager FPS to {fps}")
         self.video.set_fps(fps)
-            
+        
         # Set the expected FPS in the logger for rate calculations
         self.logger.set_expected_fps(fps)
-            
-        # Calculate frame interval in seconds
-        frame_interval = 1.0 / fps
         
-        # Variables for frame rate control
+        # Variables for metrics tracking
         frame_count = 0
         start_time = time.time()
-        buffer_level = 0  # Track buffer level to adjust timing
-        last_frame_time = start_time
         last_logger_check = start_time
         
         # Main processing loop
         consecutive_errors = 0
         try:
             while self.is_running:
-                iteration_start = time.time()
+                # Start timing the main loop cycle
+                main_loop_start = time.time()
                 
-                # Periodically check if logger is still running (every 60 seconds)
+                # Periodically check if logger is still running (every 5 minutes)
                 current_time = time.time()
-                if current_time - last_logger_check > 300:  # Check every 5 minutes
+                if current_time - last_logger_check > 300:
                     self.logger.ensure_running()
                     last_logger_check = current_time
                 
-                # Calculate elapsed time and expected frame count
-                elapsed_time = iteration_start - start_time
-                expected_frame_count = int(elapsed_time / frame_interval)
-                
-                # If we're ahead of schedule, wait
-                if frame_count > expected_frame_count:
-                    # Calculate time to wait
-                    wait_time = frame_interval - (iteration_start - last_frame_time)
-                    if wait_time > 0:
-                        time.sleep(wait_time)
-                        
                 # Read frame
                 read_start = time.time()
                 ret, frame = self.cap.read()
                 self.logger.log_operation_time('frame_read', time.time() - read_start)
                 
                 if not ret:
-                    # Adjust buffer level down if we're not getting frames
-                    buffer_level = max(0, buffer_level - 1)
+                    consecutive_errors += 1
+                    print(f"Error reading frame ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})")
                     
-                    # If buffer is depleted, handle error
-                    if buffer_level <= 0:
-                        consecutive_errors += 1
-                        print(f"Error reading frame ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})")
+                    # Log the iteration with error
+                    self.logger.log_iteration(False, False, f"Error reading frame ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})")
+                    
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                        print("Too many consecutive errors, reconnecting...")
+                        if not self._attempt_connection(source, is_youtube):
+                            print("Failed to reconnect, exiting")
+                            break
+                        consecutive_errors = 0
                         
-                        # Log the iteration with error
-                        self.logger.log_iteration(False, False, f"Error reading frame ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})")
-                        
-                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                            print("Too many consecutive errors, reconnecting...")
-                            if not self._attempt_connection(source, is_youtube):
-                                print("Failed to reconnect, exiting")
-                                break
-                            consecutive_errors = 0
-                            
-                        # Short delay before retry
-                        time.sleep(0.1)
-                        continue
+                    # Short delay before retry
+                    time.sleep(0.1)
+                    continue
                 else:
-                    # Reset error counter and update buffer level
+                    # Reset error counter
                     consecutive_errors = 0
-                    buffer_level = min(10, buffer_level + 1)  # Cap at 10
                     
-                    # Process frame
+                    # Process frame - no frame limiting
                     process_result = self.process_frame(frame, self.display.avoid_boxes)
                     
                     # Check if we should quit
@@ -610,25 +612,21 @@ class SpaceObjectDetectionSystem:
                         # Error occurred
                         self.logger.log_iteration(False, False, "Error processing frame")
                     elif isinstance(process_result, bool) and not process_result:
-                        # Unpack the bool
-                        quit_requested = process_result
-                        
-                        if quit_requested:
-                            print("Quit requested")
-                            break
-                            
-                        # Successful processing with quit info
-                        self.logger.log_iteration(False, False, "Quit requested")
+                        print("Quit requested")
+                        break
                     else:
-                        # Successful processing with detection info
+                        # Successful processing
                         self.logger.log_iteration(True, True, "Processed successfully")
                         
-                    # Update frame count and timing
+                    # Update frame count for metrics only
                     frame_count += 1
-                    last_frame_time = time.time()
                 
-                # Key handling is now done in process_frame, no need for additional waitKey here
-                # The process_frame method will handle quitting and other key commands
+                # Record the main loop cycle time
+                main_loop_time = time.time() - main_loop_start
+                if self.logger:
+                    self.logger.log_operation_time('main_loop_cycle', main_loop_time)
+                
+                # Key handling is now done in process_frame
                 
         except Exception as e:
             print(f"Error processing video stream: {str(e)}")
@@ -729,16 +727,17 @@ class SpaceObjectDetectionSystem:
         """Process live feed from camera."""
         print("\nProcessing live feed. Press 'q' to quit.")
         print("Key commands:")
-        print("  s/1 - Toggle streaming (start/stop)")
-        print("  2 - Run streaming troubleshooting")
-        print("  4 - Start burst capture")
-        print("  5 - Pause capture for 5 seconds")
-        print("  c - Clear avoid boxes")
+        print("  s - Toggle streaming (start/stop)")
         print("  t - Cycle through test frames (1 second each)")
         print("  b - Toggle burst capture mode")
+        print("  c - Clear avoid boxes")
+        print("  q - Quit")
         
         # Main processing loop
         while True:
+            # Start timing the main loop cycle
+            main_loop_start = time.time()
+            
             # Get frame from video source
             ret, frame = self.video.get_frame()
             if not ret or frame is None:
@@ -761,8 +760,11 @@ class SpaceObjectDetectionSystem:
                 break
             
             # Key handling is now done in process_frame, no need for additional waitKey here
-            # Additional key handling for specific functions in this mode
-            # Use the key from process_frame result if needed for special functions
+            
+            # Record the main loop cycle time
+            main_loop_time = time.time() - main_loop_start
+            if self.logger:
+                self.logger.log_operation_time('main_loop_cycle', main_loop_time)
 
     def load_test_images(self) -> bool:
         """Load all test images from the Test_Image_Collection directory."""
