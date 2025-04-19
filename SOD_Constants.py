@@ -69,7 +69,7 @@ class Constants:
 
         # Detection Thresholds
         self.CLASS_THRESHOLDS = {
-            'space': 0.95,
+            'space': 0.98,
             'earth': 0.75,
             'iss': 0.75,
             'lf': 0.99,
@@ -108,14 +108,14 @@ class Constants:
 
         # Anomaly Detection Parameters
         self.MIN_OBJECT_BRIGHTNESS = 10 
-        self.MAX_OBJECT_BRIGHTNESS = 108
+        self.MAX_OBJECT_BRIGHTNESS = 200
         self.GAUSSIAN_BLUR_SIZE = 5      # Size of Gaussian blur kernel (must be odd)
-        self.MORPH_KERNEL_SIZE = 2       # Size of morphological operation kernel
+        self.MORPH_KERNEL_SIZE = 1    # Size of morphological operation kernel
         self.MAX_BG_BRIGHTNESS = 23
         self.MIN_CONTRAST = 23
         self.MIN_CONTOUR_DIMENSION = 5   # Minimum width/height for contours
-        self.MAX_CONTOUR_WIDTH = 150
-        self.MAX_CONTOUR_HEIGHT = 150
+        self.MAX_CONTOUR_WIDTH = 100
+        self.MAX_CONTOUR_HEIGHT = 100
         self.MIN_CONTOUR_AREA = 25
         self.MAX_ASPECT_RATIO = 20.0
         self.DARK_REGION_THRESHOLD = 10  # Maximum brightness for dark region detection
@@ -125,8 +125,8 @@ class Constants:
 
         # Filtering Options
         self.BORDER_MARGIN = 3  # How many pixels from space box border to consider "touching"
-        self.MAX_VALID_DETECTIONS = 3  # Maximum number of valid detections per frame
-        self.MAX_CONTOURS_PER_FRAME = 10  # Maximum number of contours to process per frame
+        self.MAX_VALID_DETECTIONS = 2  # Maximum number of valid detections per frame
+        self.MAX_CONTOURS_PER_FRAME = 6  # Maximum number of contours to process per frame
 
         # Display Parameters
         self.DEBUG_VIEW_ENABLED = True

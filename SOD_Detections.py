@@ -220,6 +220,16 @@ class SpaceObjectDetector:
             if roi.size == 0 or roi_mask.size == 0:
                 return results
                 
+            # FIXED SCALE FACTOR FOR PERFORMANCE IMPROVEMENT
+            # Apply a fixed downscaling to large ROIs
+            scale_factor = 0.5  # Process at half resolution
+            original_shape = roi.shape[:2]  # Store original shape for later scaling back
+            
+            # Resize ROI and mask for faster processing
+            if roi.shape[0] > 0 and roi.shape[1] > 0:  # Ensure valid dimensions
+                roi = cv2.resize(roi, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_AREA)
+                roi_mask = cv2.resize(roi_mask, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_NEAREST)
+            
             # Convert to grayscale if needed
             if len(roi.shape) == 3:
                 roi_max = np.max(roi, axis=2)  # Use max RGB value for better detection
@@ -282,6 +292,9 @@ class SpaceObjectDetector:
             anomaly_metrics = []
             valid_detections = 0
             
+            # Scaling factor for metrics and coordinates to match original image
+            scale_back = 1.0 / scale_factor
+            
             # Process each contour
             analysis_start = time.time()
             
@@ -293,18 +306,22 @@ class SpaceObjectDetector:
                 # Get contour properties - do this first for ultra-fast rejection
                 x, y, w, h = cv2.boundingRect(contour)
                 
+                # Scale dimensions for comparison with thresholds
+                scaled_w = w * scale_back
+                scaled_h = h * scale_back
+                
                 # Check if contour has enough points to be valid
                 if len(contour) < 10:  # Minimum 3 points needed for a valid contour
                     continue
                 
-                # Ultra-fast size check before any other processing
-                if (w < self.min_contour_dimension or h < self.min_contour_dimension or 
-                    w > self.max_contour_width or h > self.max_contour_height):
+                # Ultra-fast size check before any other processing - use scaled dimensions
+                if (scaled_w < self.min_contour_dimension or scaled_h < self.min_contour_dimension or 
+                    scaled_w > self.max_contour_width or scaled_h > self.max_contour_height):
                     continue
                 
-                # Convert to global coordinates for later use
-                abs_x = x + x1
-                abs_y = y + y1
+                # Convert to global coordinates for later use - account for scaling
+                abs_x = int((x * scale_back) + x1)
+                abs_y = int((y * scale_back) + y1)
                 
                 # Create binary mask for exact object boundaries
                 obj_mask = np.zeros_like(final_search_mask)
@@ -314,6 +331,14 @@ class SpaceObjectDetector:
                 is_valid, metrics = self.analyze_object(roi_max, obj_mask, w, h, contour)
                 if not is_valid:
                     continue
+                
+                # Scale metrics back to original dimensions
+                if 'width' in metrics:
+                    metrics['width'] *= scale_back
+                if 'height' in metrics:
+                    metrics['height'] *= scale_back
+                if 'area' in metrics:
+                    metrics['area'] *= (scale_back * scale_back)
                 
                 # Skip if contrast is too low or negative
                 if metrics['contrast'] < self.min_contrast:
@@ -334,8 +359,8 @@ class SpaceObjectDetector:
                     
                     # Calculate minimum distance between boxes
                     # If boxes are far apart, the contour can't be close to the border
-                    min_dist_x = max(0, max(cx_global - (sx + sw), sx - (cx_global + w)))
-                    min_dist_y = max(0, max(cy_global - (sy + sh), sy - (cy_global + h)))
+                    min_dist_x = max(0, max(cx_global - (sx + sw), sx - (cx_global + int(w * scale_back))))
+                    min_dist_y = max(0, max(cy_global - (sy + sh), sy - (cy_global + int(h * scale_back))))
                     min_dist = math.sqrt(min_dist_x**2 + min_dist_y**2)
                     
                     # If minimum distance is greater than border margin, definitely not too close
@@ -361,8 +386,10 @@ class SpaceObjectDetector:
                     
                     # Check if contour is entirely within the inset rectangle
                     # If not, it's too close to the border
-                    if not (cx_global >= inset_x1 and (cx_global + w) <= inset_x2 and
-                            cy_global >= inset_y1 and (cy_global + h) <= inset_y2):
+                    scaled_w_int = int(w * scale_back)
+                    scaled_h_int = int(h * scale_back)
+                    if not (cx_global >= inset_x1 and (cx_global + scaled_w_int) <= inset_x2 and
+                            cy_global >= inset_y1 and (cy_global + scaled_h_int) <= inset_y2):
                         too_close_to_border = True
                         break
                 
@@ -389,9 +416,11 @@ class SpaceObjectDetector:
                 
                 # Check if anomaly overlaps with any filtering box (in global coordinates)
                 overlaps = False
+                scaled_w_int = int(w * scale_back)
+                scaled_h_int = int(h * scale_back)
                 for i, (fx1, fy1, fx2, fy2) in enumerate(filter_boxes):
-                    if (abs_x < fx2 and abs_x + w > fx1 and
-                        abs_y < fy2 and abs_y + h > fy1):
+                    if (abs_x < fx2 and abs_x + scaled_w_int > fx1 and
+                        abs_y < fy2 and abs_y + scaled_h_int > fy1):
                         overlaps = True
                         break
                 
@@ -400,11 +429,11 @@ class SpaceObjectDetector:
                 
                 # Store metrics for this anomaly
                 metrics['position'] = (abs_x, abs_y)  # Already in global coordinates
-                metrics['width'] = w
-                metrics['height'] = h
-                metrics['area'] = w * h
+                metrics['width'] = scaled_w_int
+                metrics['height'] = scaled_h_int
+                metrics['area'] = scaled_w_int * scaled_h_int
                 
-                anomalies.append((abs_x, abs_y, w, h))
+                anomalies.append((abs_x, abs_y, scaled_w_int, scaled_h_int))
                 anomaly_metrics.append(metrics)
                 valid_detections += 1
             
@@ -413,8 +442,12 @@ class SpaceObjectDetector:
             # Now convert contours to absolute coordinates after all analysis is done
             global_contours = []
             for cont in local_contours:
-                # Create a copy of the contour and shift it to global coordinates
-                global_cont = cont.copy()
+                # Create a copy of the contour and scale it back to original size
+                global_cont = cont.copy().astype(np.float32)
+                global_cont = global_cont * scale_back
+                
+                # Convert back to integer and shift to global coordinates
+                global_cont = global_cont.astype(np.int32)
                 global_cont[:, :, 0] += x1
                 global_cont[:, :, 1] += y1
                 global_contours.append(global_cont)

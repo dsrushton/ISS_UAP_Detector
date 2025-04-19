@@ -359,7 +359,7 @@ class SpaceObjectDetectionSystem:
             if has_detection and self.video and not self.video.recording:
                 # Use fixed dimensions since both frames are 939x720
                 frame_size = (combined_frame.shape[1], combined_frame.shape[0])
-                if self.video.start_recording(frame_size, debug_view):
+                if self.video.start_recording(frame_size):
                     print(f"\nStarted recording: {self.video.current_video_number:05d}.avi")
                     # Save first detection frame
                     if self.capture:
@@ -597,7 +597,7 @@ class SpaceObjectDetectionSystem:
                         consecutive_errors = 0
                         
                     # Short delay before retry
-                    time.sleep(0.1)
+                    #time.sleep(0.1)
                     continue
                 else:
                     # Reset error counter

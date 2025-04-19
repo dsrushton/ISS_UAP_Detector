@@ -164,9 +164,6 @@ class VideoManager:
         self.recording_start_time = 0
         self.last_detection_time = 0
         
-        # Store the debug view for overlay in update_recording
-        self.stored_debug_view = None
-        
     def _init_video_number(self) -> int:
         """Find the next available video number by checking AVI directory once at startup."""
         i = 0
@@ -211,7 +208,7 @@ class VideoManager:
         
         # Validate input
         if combined_view is None:
-            #self.logger.log_error("Received None frame in add_to_buffer")
+            self.logger.log_error("Received None frame in add_to_buffer")
             return
             
         try:
@@ -219,12 +216,12 @@ class VideoManager:
             self.frame_buffer.append(combined_view.copy())
             
             # Log operation time
-            self.logger.log_operation_time('buffer_append', time.time() - buffer_start)
+            #self.logger.log_operation_time('buffer_append', time.time() - buffer_start)
         except Exception as e:
             self.logger.log_error(f"Error adding frame to buffer: {str(e)}")
             
 
-    def start_recording(self, frame_size: tuple, debug_view: Optional[np.ndarray] = None) -> bool:
+    def start_recording(self, frame_size: tuple) -> bool:
         """Start recording video with buffer."""
         if self.recording:
             return False
@@ -236,17 +233,11 @@ class VideoManager:
         # Check buffer status
         buffer_length = len(self.frame_buffer)
         buffer_duration = buffer_length / self.fps if self.fps > 0 else 0
-        self.logger.log_iteration(True, True, f"Starting recording with {buffer_length} buffered frames ({buffer_duration:.1f} seconds)")
+        #self.logger.log_iteration(True, True, f"Starting recording with {buffer_length} buffered frames ({buffer_duration:.1f} seconds)")
         
         if buffer_length == 0:
             self.logger.log_error("No frames in buffer! Check if add_to_buffer is being called.")
             # Try to continue anyway, but log the issue
-        
-        # Store the debug view for later use in update_recording
-        if debug_view is not None:
-            self.stored_debug_view = debug_view.copy()
-        else:
-            self.stored_debug_view = None
         
         # Initialize video writer
         if self.video_writer.start(filename, self.fps, frame_size):
@@ -264,7 +255,7 @@ class VideoManager:
                     else:
                         self.logger.log_error(f"Failed to write buffered frame {frames_written}")
             
-            self.logger.log_iteration(True, True, f"Wrote {frames_written} buffered frames to video")
+            #self.logger.log_iteration(True, True, f"Wrote {frames_written} buffered frames to video")
             
             # Start counting frames
             self.frames_since_start = frames_written
@@ -282,12 +273,9 @@ class VideoManager:
             
         try:
             recording_duration = self.frames_since_start / self.fps if self.fps > 0 else 0
-            self.logger.log_iteration(True, False, f"Stopping recording after {self.frames_since_start} frames ({recording_duration:.1f} seconds)")
+            #self.logger.log_iteration(True, False, f"Stopping recording after {self.frames_since_start} frames ({recording_duration:.1f} seconds)")
             self.recording = False
             self.video_writer.stop()
-            
-            # Clear the stored debug view
-            self.stored_debug_view = None
         except Exception as e:
             self.logger.log_error(f"Error stopping recording: {str(e)}")
                 
@@ -296,7 +284,7 @@ class VideoManager:
         Update video recording with new frame.
         
         Args:
-            frame: Frame to write to video (combined frame with debug view on left, annotated frame on right)
+            frame: Frame to write to video
             has_detection: Whether this frame contains a detection
         """
         recording_start = time.time()
@@ -310,51 +298,9 @@ class VideoManager:
             return
             
         try:
-            # We'll assume the frame is valid and proceed without the aspect ratio check
-            # The previous check was causing frequent error messages
-            
-            # For the first 179 frames after the buffer, create a special view:
-            # - Left half: Show the stored debug view (from when the detection occurred)
-            # - Right half: Show only the right half of the combined frame (the annotated frame)
-            if self.frames_since_start < 180 and self.stored_debug_view is not None:
-                # Get the dimensions
-                h, w = frame.shape[:2]
-                half_w = w // 2
-                
-                # Create a new frame with the same dimensions as the combined frame
-                modified_frame = np.zeros_like(frame)
-                
-                # Left half: Use the stored debug view (crop or pad if needed)
-                if self.stored_debug_view.shape[0] != h or self.stored_debug_view.shape[1] != half_w:
-                    # If dimensions don't match, create a properly sized debug view
-                    debug_h, debug_w = self.stored_debug_view.shape[:2]
-                    
-                    # Create a black canvas of the correct size
-                    sized_debug = np.zeros((h, half_w, 3), dtype=np.uint8)
-                    
-                    # Calculate dimensions for copying (to avoid out-of-bounds)
-                    copy_h = min(h, debug_h)
-                    copy_w = min(half_w, debug_w)
-                    
-                    # Copy the debug view (or a portion of it) to the canvas
-                    sized_debug[0:copy_h, 0:copy_w] = self.stored_debug_view[0:copy_h, 0:copy_w]
-                    
-                    # Use the properly sized debug view
-                    modified_frame[0:h, 0:half_w] = sized_debug
-                else:
-                    # Dimensions match, use as is
-                    modified_frame[0:h, 0:half_w] = self.stored_debug_view
-                
-                # Right half: Use the right half of the combined frame (the annotated frame)
-                modified_frame[0:h, half_w:w] = frame[0:h, half_w:w]
-                
-                # Write the modified frame to video
-                if not self.video_writer.write(modified_frame):
-                    self.logger.log_error("Failed to write frame in update_recording")
-            else:
-                # After 179 frames, use the combined frame as is
-                if not self.video_writer.write(frame):
-                    self.logger.log_error("Failed to write frame in update_recording")
+            # Simply write the frame directly with no special handling
+            if not self.video_writer.write(frame):
+                self.logger.log_error("Failed to write frame in update_recording")
             
             self.frames_since_start += 1
                 

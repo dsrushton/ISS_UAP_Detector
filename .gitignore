@@ -33,3 +33,4 @@ env/
 # Line endings
 *.orig
 *~ 
+youtube_config.py
