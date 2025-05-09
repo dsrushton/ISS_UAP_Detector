@@ -13,6 +13,7 @@ import importlib
 import logging
 import queue
 import sys
+from collections import defaultdict
 
 from SOD_Constants import (
     MAX_CONSECUTIVE_ERRORS, 
@@ -33,6 +34,155 @@ from SOD_Video import VideoManager
 from SOD_Logger import StatusLogger
 from SOD_Console import ParameterConsole
 from SOD_Stream import StreamManager
+
+# Add this class after imports but before SpaceObjectDetectionSystem
+class FrameBufferPool:
+    """
+    Manages a ring buffer of pre-allocated frame buffers.
+    The producer writes into the next available buffer, and the consumer treats them as read-only.
+    This eliminates reallocations and ensures immutability without copying.
+    """
+    
+    def __init__(self, buffer_count=8, width=1920, height=1080, channels=4):
+        """
+        Initialize the frame buffer pool.
+        
+        Args:
+            buffer_count: Number of frame buffers to pre-allocate (default: 8)
+            width: Width of each frame buffer (default: 1920)
+            height: Height of each frame buffer (default: 1080)
+            channels: Number of channels (default: 4 for BGRA)
+        """
+        self.buffer_count = buffer_count
+        self.width = width
+        self.height = height
+        self.channels = channels
+        
+        # Pre-allocate all frame buffers
+        self.buffers = [
+            np.zeros((height, width, channels), dtype=np.uint8)
+            for _ in range(buffer_count)
+        ]
+        
+        # Current write index (for producer)
+        self.write_idx = 0
+        
+        # Current read index (for consumer)
+        self.read_idx = 0
+        
+        # Track if each buffer is ready for consumption
+        self.buffer_ready = [False] * buffer_count
+        
+        # Lock for thread-safe operation
+        self.lock = threading.Lock()
+        
+        print(f"FrameBufferPool initialized with {buffer_count} buffers of size {width}x{height}x{channels}")
+    
+    def get_next_write_buffer(self):
+        """
+        Get the next buffer for writing.
+        
+        Returns:
+            The next available buffer for writing and its index
+        """
+        with self.lock:
+            # Get the current write buffer and index
+            buffer_idx = self.write_idx
+            buffer = self.buffers[buffer_idx]
+            
+            # Advance the write index for next time
+            self.write_idx = (self.write_idx + 1) % self.buffer_count
+            
+            # Return the buffer and its index
+            return buffer, buffer_idx
+    
+    def mark_buffer_ready(self, buffer_idx):
+        """
+        Mark a buffer as ready for consumption.
+        
+        Args:
+            buffer_idx: Index of the buffer that is now ready
+        """
+        with self.lock:
+            self.buffer_ready[buffer_idx] = True
+    
+    def get_ready_buffer(self):
+        """
+        Get the next ready buffer for reading.
+        
+        Returns:
+            The next buffer ready for reading and its index, or (None, -1) if no buffer is ready
+        """
+        with self.lock:
+            # Check if the current read buffer is ready
+            if self.buffer_ready[self.read_idx]:
+                # Get the current read buffer and index
+                buffer_idx = self.read_idx
+                buffer = self.buffers[buffer_idx]
+                
+                # Mark the buffer as not ready (consumed)
+                self.buffer_ready[buffer_idx] = False
+                
+                # Advance the read index for next time
+                self.read_idx = (self.read_idx + 1) % self.buffer_count
+                
+                # Return the buffer and its index
+                return buffer, buffer_idx
+            else:
+                # No buffer is ready
+                return None, -1
+    
+    def copy_frame_to_buffer(self, frame, buffer_idx=None):
+        """
+        Copy a frame into a specific buffer or the next available one.
+        
+        Args:
+            frame: Source frame to copy
+            buffer_idx: Optional index of buffer to use, or None to use next available
+            
+        Returns:
+            Index of the buffer that was written to
+        """
+        if buffer_idx is None:
+            # Get the next available buffer
+            buffer, buffer_idx = self.get_next_write_buffer()
+        else:
+            # Use the specified buffer
+            buffer = self.buffers[buffer_idx]
+        
+        # Copy the frame data into the buffer
+        # Handle different frame sizes by copying only what fits
+        h, w = frame.shape[:2]
+        ch = frame.shape[2] if len(frame.shape) > 2 else 1
+        
+        # Calculate the copy dimensions (minimum of frame and buffer)
+        copy_h = min(h, self.height)
+        copy_w = min(w, self.width)
+        copy_ch = min(ch, self.channels)
+        
+        # If source has fewer channels than destination, only copy those channels
+        if copy_ch < self.channels:
+            buffer[:copy_h, :copy_w, :copy_ch] = frame[:copy_h, :copy_w]
+        else:
+            # Copy all channels that fit
+            buffer[:copy_h, :copy_w] = frame[:copy_h, :copy_w, :copy_ch]
+        
+        # Mark the buffer as ready for consumption
+        self.mark_buffer_ready(buffer_idx)
+        
+        return buffer_idx
+    
+    def get_buffer(self, buffer_idx):
+        """
+        Get a specific buffer by index.
+        
+        Args:
+            buffer_idx: Index of the buffer to get
+            
+        Returns:
+            The requested buffer
+        """
+        return self.buffers[buffer_idx]
 
 class SpaceObjectDetectionSystem:
     """
@@ -75,6 +225,15 @@ class SpaceObjectDetectionSystem:
         
         # Add combined frame buffer - initialize as None, will be created when needed
         self.combined_frame_buffer = None
+        
+        # Add timing collection for batched logging
+        self.timing_stats = defaultdict(list)
+        self.log_interval = 30  # Log every 30 frames
+        self.frames_since_log = 0
+        
+        # Initialize frame buffer pool (8 pre-allocated buffers)
+        # Using 3 channels (BGR) since most OpenCV operations use 3-channel format
+        self.frame_buffer_pool = FrameBufferPool(buffer_count=8, width=1920, height=1080, channels=3)
         
         # Ensure required directories exist
         os.makedirs(VIDEO_SAVE_DIR, exist_ok=True)
@@ -194,7 +353,6 @@ class SpaceObjectDetectionSystem:
         if not self.stream.is_streaming:
             # Prompt for stream key if not already set
             if not self.stream.stream_key:
-
                 try:
                     # Try to import the YouTube stream key from config file
                     from youtube_config import YOUTUBE_STREAM_KEY
@@ -225,6 +383,19 @@ class SpaceObjectDetectionSystem:
                 if should_print:
                     print("\nStream started - check YouTube Studio")
                     print("Note: It may take 60-90 seconds for YouTube to show the stream")
+                    
+                    # Show stream cycling info
+                    if hasattr(self.stream, 'auto_restart') and self.stream.auto_restart:
+                        try:
+                            # If we can import settings, use them
+                            from youtube_config import STREAM_CYCLE_SECONDS
+                            hours = STREAM_CYCLE_SECONDS // 3600
+                            minutes = (STREAM_CYCLE_SECONDS % 3600) // 60
+                            print(f"Stream cycling is enabled - will restart every {hours}h {minutes}m to avoid YouTube limits")
+                        except ImportError:
+                            # Default settings
+                            print("Stream cycling is enabled - will restart every 11h 55m to avoid YouTube limits")
+                    
                     self.last_streaming_message_time = current_time
             else:
                 if should_print:
@@ -238,7 +409,7 @@ class SpaceObjectDetectionSystem:
             self.stream.stop_streaming()
             self.display.set_streaming(False)
 
-    def process_frame(self, frame: np.ndarray, avoid_boxes: List[Tuple[int, int, int, int]] = None) -> Optional[bool]:
+    def process_frame(self, frame: np.ndarray, avoid_boxes: List[Tuple[int, int, int, int]] = None, crop_left: int = None, crop_right: int = None, is_test_frame: bool = False) -> Optional[bool]:
         """
         Process a single frame.
         
@@ -250,8 +421,12 @@ class SpaceObjectDetectionSystem:
         try:
             iteration_start = time.time()
             
-            # Start frame timing in logger
-            self.logger.start_frame()
+            # Only start frame timing in logger every N frames
+            self.frames_since_log = (self.frames_since_log + 1) % self.log_interval
+            log_this_frame = self.frames_since_log == 0
+            
+            if log_this_frame:
+                self.logger.start_frame()
             
             # Get latest constants
             import SOD_Constants as const
@@ -295,9 +470,21 @@ class SpaceObjectDetectionSystem:
                             self.inject_test_frames = self.frame_display_start
                             print(f"\nMoving to test frame {self.current_test_image + 1}/{len(self.test_images)}")
             
-            # Crop frame - but skip for test frames since they're already cropped
-            if not self.current_frame_is_test:
-                frame = frame[:, const.get_value('CROP_LEFT'):-const.get_value('CROP_RIGHT')]  # Crop left and right sides
+            # Get crop values if not provided
+            if crop_left is None:
+                crop_left = const.get_value('CROP_LEFT')
+            if crop_right is None:
+                crop_right = const.get_value('CROP_RIGHT')
+            
+            # Use test frame as-is since it's already cropped, otherwise we'll use GPU cropping in detector
+            if self.current_frame_is_test:
+                # Test frames are already cropped, so skip crop_left/crop_right parameters
+                detections_frame = frame
+                run_detection = True
+            else:
+                # For regular frames, we'll let the detector handle GPU cropping
+                detections_frame = frame
+                run_detection = True
             
             # Check if we have avoid boxes from the display manager
             if avoid_boxes is None and self.display:
@@ -305,18 +492,43 @@ class SpaceObjectDetectionSystem:
             
             # Run detection
             detection_start = time.time()
-            detections = self.detector.process_frame(frame, avoid_boxes, is_test_frame=self.current_frame_is_test)
-            self.logger.log_operation_time('detection', time.time() - detection_start)
+            
+            if run_detection:
+                # Pass the frame uncropped with crop parameters - detector will handle GPU cropping
+                detections = self.detector.process_frame(
+                    detections_frame, 
+                    avoid_boxes, 
+                    is_test_frame=self.current_frame_is_test,
+                    crop_left=None if self.current_frame_is_test else crop_left,
+                    crop_right=None if self.current_frame_is_test else crop_right
+                )
+            else:
+                self.logger.log_error("Detection skipped")
+                return True
+            
+            detection_time = time.time() - detection_start
+            
+            # Store timing locally
+            self.timing_stats['detection'].append(detection_time)
+            
+            # Only log to the logger periodically
+            if log_this_frame:
+                self.logger.log_operation_time('detection', sum(self.timing_stats['detection']) / len(self.timing_stats['detection']))
+                self.timing_stats['detection'] = []
             
             if detections is None:
                 self.logger.log_error("Detection failed")
-                self.logger.log_operation_time('total_iteration', time.time() - iteration_start)
-                self.logger.end_frame()
+                if log_this_frame:
+                    self.logger.log_operation_time('total_iteration', time.time() - iteration_start)
+                    self.logger.end_frame()
                 return True
+            
+            # Get the cropped frame for display and UI operations
+            display_frame = frame if self.current_frame_is_test else frame[:, crop_left:-crop_right]
             
             # Update display
             display_start = time.time()
-            annotated_frame = self.display.draw_detections(frame, detections)
+            annotated_frame = self.display.draw_detections(display_frame, detections)
             
             # Create debug view if needed
             debug_view = None
@@ -325,7 +537,7 @@ class SpaceObjectDetectionSystem:
             if detections.darkness_detected or 'nofeed' in detections.rcnn_boxes:
                 # For darkness or no feed, create a debug message view
                 # The create_debug_view method now handles these cases automatically
-                debug_view = self.display.create_debug_view(frame, [])
+                debug_view = self.display.create_debug_view(display_frame, [])
             elif 'space' in detections.rcnn_boxes:
                 # Normal case with space regions
                 space_data = []
@@ -339,12 +551,17 @@ class SpaceObjectDetectionSystem:
                     detections.space_mask if hasattr(detections, 'space_mask') else None,
                     detections.space_contours if hasattr(detections, 'space_contours') else None
                 ))
-                debug_view = self.display.create_debug_view(frame, space_data)
+                debug_view = self.display.create_debug_view(display_frame, space_data)
             else:
                 # No space regions found
-                debug_view = self.display.create_debug_view(frame, [])
+                debug_view = self.display.create_debug_view(display_frame, [])
             
-            self.logger.log_operation_time('debug_view', time.time() - display_start)
+            debug_view_time = time.time() - display_start
+            self.timing_stats['debug_view'].append(debug_view_time)
+            
+            if log_this_frame:
+                self.logger.log_operation_time('debug_view', sum(self.timing_stats['debug_view']) / len(self.timing_stats['debug_view']))
+                self.timing_stats['debug_view'] = []
             
             # Create combined view
             combined_frame = self.display.create_combined_view(annotated_frame, debug_view)
@@ -387,9 +604,12 @@ class SpaceObjectDetectionSystem:
             
             # Stream frame if streaming is active
             if self.stream and self.stream.is_streaming:
-                # The combined_frame is always 1920x1080 due to padding in DisplayManager,
-                # matching the expected stream dimensions, so no resize is needed here.
-                self.stream.stream_frame(combined_frame)
+                # Instead of passing the combined frame directly, use the frame buffer pool
+                # Get a buffer from the pool and copy the combined frame to it
+                buffer_idx = self.frame_buffer_pool.copy_frame_to_buffer(combined_frame)
+                
+                # Pass the buffer index to the stream_frame method instead of the frame itself
+                self.stream.stream_frame(None, frame_pool=self.frame_buffer_pool, buffer_idx=buffer_idx)
             
             # Display the combined frame using DisplayManager with optional rate limiting
             # Only display every X frames to reduce display overhead (e.g., 2 = 30fps display at 60fps processing)
@@ -400,16 +620,27 @@ class SpaceObjectDetectionSystem:
             self.frame_count += 1
             
             # Log timing information
-            self.logger.log_operation_time('display', time.time() - display_start)
-            self.logger.log_operation_time('total_iteration', time.time() - iteration_start)
+            display_time = time.time() - display_start
+            self.timing_stats['display'].append(display_time)
             
-            # End frame timing in logger
-            self.logger.end_frame()
+            total_iteration_time = time.time() - iteration_start
+            self.timing_stats['total_iteration'].append(total_iteration_time)
+            
+            if log_this_frame:
+                self.logger.log_operation_time('display', sum(self.timing_stats['display']) / len(self.timing_stats['display']))
+                self.timing_stats['display'] = []
+                
+                self.logger.log_operation_time('total_iteration', sum(self.timing_stats['total_iteration']) / len(self.timing_stats['total_iteration']))
+                self.timing_stats['total_iteration'] = []
+                
+                # End frame timing in logger
+                self.logger.end_frame()
 
             # Handle burst capture
             if hasattr(self, 'burst_remaining') and self.burst_remaining > 0:
                 if self.capture:
-                    self.capture.save_raw_frame(frame)
+                    # For burst capture, use the cropped frame
+                    self.capture.save_raw_frame(display_frame)
                 self.burst_remaining -= 1
             
             # Process key commands
@@ -560,10 +791,19 @@ class SpaceObjectDetectionSystem:
         # Set the expected FPS in the logger for rate calculations
         self.logger.set_expected_fps(fps)
         
+        # Pre-compute crop values
+        import SOD_Constants as const
+        crop_left, crop_right = const.get_value('CROP_LEFT'), const.get_value('CROP_RIGHT')
+        
         # Variables for metrics tracking
         frame_count = 0
         start_time = time.time()
         last_logger_check = start_time
+        
+        # Track frame read times for batched logging
+        frame_read_times = []
+        main_loop_times = []
+        frames_since_log = 0
         
         # Main processing loop
         consecutive_errors = 0
@@ -581,7 +821,20 @@ class SpaceObjectDetectionSystem:
                 # Read frame
                 read_start = time.time()
                 ret, frame = self.cap.read()
-                self.logger.log_operation_time('frame_read', time.time() - read_start)
+                read_time = time.time() - read_start
+                
+                # Store read time for batched logging
+                frame_read_times.append(read_time)
+                
+                # Increment counter for batched logging
+                frames_since_log = (frames_since_log + 1) % self.log_interval
+                log_this_frame = frames_since_log == 0
+                
+                # Only log periodically to reduce lock contention
+                if log_this_frame and frame_read_times:
+                    avg_read_time = sum(frame_read_times) / len(frame_read_times)
+                    self.logger.log_operation_time('frame_read', avg_read_time)
+                    frame_read_times = []
                 
                 if not ret:
                     consecutive_errors += 1
@@ -604,8 +857,8 @@ class SpaceObjectDetectionSystem:
                     # Reset error counter
                     consecutive_errors = 0
                     
-                    # Process frame - no frame limiting
-                    process_result = self.process_frame(frame, self.display.avoid_boxes)
+                    # Process frame with pre-computed crop values
+                    process_result = self.process_frame(frame, self.display.avoid_boxes, crop_left, crop_right)
                     
                     # Check if we should quit
                     if process_result is None:
@@ -623,8 +876,13 @@ class SpaceObjectDetectionSystem:
                 
                 # Record the main loop cycle time
                 main_loop_time = time.time() - main_loop_start
-                if self.logger:
-                    self.logger.log_operation_time('main_loop_cycle', main_loop_time)
+                main_loop_times.append(main_loop_time)
+                
+                # Only log periodically to reduce lock contention
+                if log_this_frame and main_loop_times:
+                    avg_loop_time = sum(main_loop_times) / len(main_loop_times)
+                    self.logger.log_operation_time('main_loop_cycle', avg_loop_time)
+                    main_loop_times = []
                 
                 # Key handling is now done in process_frame
                 
@@ -733,6 +991,47 @@ class SpaceObjectDetectionSystem:
         print("  c - Clear avoid boxes")
         print("  q - Quit")
         
+        # YouTube API and stream cycling information
+        api_available = False
+        try:
+            from SOD_YouTubeAPI import GOOGLE_API_AVAILABLE
+            api_available = GOOGLE_API_AVAILABLE
+        except ImportError:
+            pass
+            
+        try:
+            from youtube_config import ENABLE_STREAM_CYCLING, STREAM_CYCLE_SECONDS
+            if ENABLE_STREAM_CYCLING:
+                hours = STREAM_CYCLE_SECONDS // 3600
+                minutes = (STREAM_CYCLE_SECONDS % 3600) // 60
+                print(f"\nYouTube stream cycling: Enabled (restart every {hours}h {minutes}m)")
+                
+                if api_available:
+                    print("YouTube API integration: Available")
+                    print("  For proper broadcast archiving, ensure you have:")
+                    print("  1. Installed API packages: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib")
+                    print("  2. Created 'client_secrets.json' from the template")
+                else:
+                    print("YouTube API integration: Not available")
+                    print("  To enable API integration, run: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib")
+            else:
+                print("\nYouTube stream cycling: Disabled")
+        except ImportError:
+            print("\nYouTube stream cycling: Enabled with default settings (11h 55m)")
+            
+            if api_available:
+                print("YouTube API integration: Available")
+            else:
+                print("YouTube API integration: Not available")
+        
+        # Pre-compute crop values
+        import SOD_Constants as const
+        crop_left, crop_right = const.get_value('CROP_LEFT'), const.get_value('CROP_RIGHT')
+        
+        # Track main loop times for batched logging
+        main_loop_times = []
+        frames_since_log = 0
+        
         # Main processing loop
         while True:
             # Start timing the main loop cycle
@@ -745,8 +1044,8 @@ class SpaceObjectDetectionSystem:
                 time.sleep(0.1)
                 continue
                 
-            # Process the frame
-            process_result = self.process_frame(frame)
+            # Process the frame with pre-computed crop values
+            process_result = self.process_frame(frame, crop_left=crop_left, crop_right=crop_right)
             
             # Check the result
             if process_result is None:
@@ -763,8 +1062,17 @@ class SpaceObjectDetectionSystem:
             
             # Record the main loop cycle time
             main_loop_time = time.time() - main_loop_start
-            if self.logger:
-                self.logger.log_operation_time('main_loop_cycle', main_loop_time)
+            main_loop_times.append(main_loop_time)
+            
+            # Increment counter for batched logging
+            frames_since_log = (frames_since_log + 1) % self.log_interval
+            log_this_frame = frames_since_log == 0
+            
+            # Only log periodically to reduce lock contention
+            if log_this_frame and main_loop_times and self.logger:
+                avg_loop_time = sum(main_loop_times) / len(main_loop_times)
+                self.logger.log_operation_time('main_loop_cycle', avg_loop_time)
+                main_loop_times = []
 
     def load_test_images(self) -> bool:
         """Load all test images from the Test_Image_Collection directory."""

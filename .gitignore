@@ -34,3 +34,8 @@ env/
 *.orig
 *~ 
 youtube_config.py
+
+# YouTube API credentials and tokens
+client_secrets.json
+youtube_token.json
+youtube_stream_id.json

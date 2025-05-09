@@ -23,6 +23,52 @@ from SOD_Constants import (
     DEVICE, MODEL_PATH, CLASS_NAMES, CLASS_THRESHOLDS
 )
 
+def gpu_crop_frame(frame: np.ndarray, left: int, right: int) -> np.ndarray:
+    """
+    Crop a frame using GPU when CUDA is available, otherwise fallback to CPU.
+    
+    Args:
+        frame: Input frame (numpy array)
+        left: Number of pixels to crop from left
+        right: Number of pixels to crop from right
+        
+    Returns:
+        Cropped frame
+    """
+    # Check specifically for OpenCV CUDA support
+    has_opencv_cuda = False
+    try:
+        # Check if cv2.cuda.getCudaEnabledDeviceCount exists and returns at least 1
+        has_opencv_cuda = hasattr(cv2, 'cuda') and callable(getattr(cv2.cuda, 'getCudaEnabledDeviceCount', None)) and cv2.cuda.getCudaEnabledDeviceCount() > 0
+    except Exception:
+        # If any error occurs during check, assume no CUDA support
+        has_opencv_cuda = False
+    
+    # If no OpenCV CUDA support, fall back to CPU cropping
+    if not has_opencv_cuda:
+        return frame[:, left:-right]
+        
+    try:
+        # Create a GPU Mat from the numpy frame
+        gpu_frame = cv2.cuda_GpuMat()
+        gpu_frame.upload(frame)
+        
+        # Calculate the right boundary
+        width = frame.shape[1]
+        right_boundary = width - right
+        
+        # Use colRange to crop the frame horizontally (much faster than CPU cropping)
+        gpu_cropped = gpu_frame.colRange(left, right_boundary)
+        
+        # Download the result back to CPU
+        cropped_frame = gpu_cropped.download()
+        
+        return cropped_frame
+    except Exception as e:
+        # Don't print the error - we've already checked for CUDA support
+        # but there might be other CUDA-related errors we want to silently handle
+        return frame[:, left:-right]
+
 @dataclass
 class DetectionResults:
     """Container for detection results."""
@@ -222,7 +268,7 @@ class SpaceObjectDetector:
                 
             # FIXED SCALE FACTOR FOR PERFORMANCE IMPROVEMENT
             # Apply a fixed downscaling to large ROIs
-            scale_factor = 0.5  # Process at half resolution
+            scale_factor = 0.6  # Process at half resolution
             original_shape = roi.shape[:2]  # Store original shape for later scaling back
             
             # Resize ROI and mask for faster processing
@@ -597,7 +643,7 @@ class SpaceObjectDetector:
         #if self.logger:
          #   self.logger.log_operation_time('darkness_update', time.time() - darkness_start)
 
-    def process_frame(self, frame: np.ndarray, avoid_boxes: List[Tuple[int, int, int, int]] = None, is_test_frame: bool = False) -> Optional[DetectionResults]:
+    def process_frame(self, frame: np.ndarray, avoid_boxes: List[Tuple[int, int, int, int]] = None, is_test_frame: bool = False, crop_left: int = None, crop_right: int = None) -> Optional[DetectionResults]:
         """Process frame through detection pipeline."""
         try:
             self.frame_count += 1
@@ -608,18 +654,30 @@ class SpaceObjectDetector:
             self.is_test_frame = is_test_frame
             results.metadata['test_frame'] = is_test_frame
             
+            # Get crop values if not provided
+            if crop_left is None:
+                crop_left = const.get_value('CROP_LEFT')
+            if crop_right is None:
+                crop_right = const.get_value('CROP_RIGHT')
+            
             # Run RCNN on regular cycle OR if this is a test frame
             if is_rcnn_frame or is_test_frame:
                 # Instead of running RCNN synchronously, push it to the queue
                 try:
                     # Only send new frames if queue isn't full
                     if not self.rcnn_queue.full():
-                        self.rcnn_queue.put_nowait(frame)
+                        if not is_test_frame:
+                            # For non-test frames, send the frame with crop parameters
+                            self.rcnn_queue.put_nowait((frame, crop_left, crop_right))
+                        else:
+                            # Test frames are already cropped
+                            self.rcnn_queue.put_nowait(frame)
                         results.metadata['rcnn_frame'] = True
                     else:
                         results.metadata['rcnn_frame'] = False
                         results.metadata['rcnn_queue_full'] = True
-                except Exception:
+                except Exception as e:
+                    print(f"Error queueing frame: {e}")
                     results.metadata['rcnn_frame'] = False
             
             # Use the latest available RCNN results
@@ -639,7 +697,13 @@ class SpaceObjectDetector:
                     results.metadata['darkness_area_ratio'] = self.cached_darkness_area_ratio
             else:
                 # Update darkness detection state
-                self._update_darkness_state(frame)
+                if not is_test_frame:
+                    # Crop frame for darkness detection
+                    cropped_frame = gpu_crop_frame(frame, crop_left, crop_right)
+                    self._update_darkness_state(cropped_frame)
+                else:
+                    # Test frames are already cropped
+                    self._update_darkness_state(frame)
                 
                 # Use newly calculated values
                 results.darkness_detected = self.cached_darkness_detected
@@ -677,7 +741,12 @@ class SpaceObjectDetector:
                     space_boxes_changed = not self._are_space_boxes_same(space_boxes)
                     
                     if is_rcnn_frame or is_test_frame or space_boxes_changed:
-                        self._update_cached_border_data(frame, space_boxes)
+                        # Crop frame if needed
+                        if not is_test_frame:
+                            cropped_frame = gpu_crop_frame(frame, crop_left, crop_right)
+                            self._update_cached_border_data(cropped_frame, space_boxes)
+                        else:
+                            self._update_cached_border_data(frame, space_boxes)
                         self.last_border_update_frame = self.frame_count
                     
                     # Track all anomalies and metrics
@@ -685,7 +754,13 @@ class SpaceObjectDetector:
                     all_metrics = []
                     
                     # Process the main combined space box using cached border data
-                    box_results = self.detect_anomalies(frame, space_boxes, avoid_boxes)
+                    if not is_test_frame:
+                        # Crop frame for detect_anomalies
+                        cropped_frame = gpu_crop_frame(frame, crop_left, crop_right)
+                        box_results = self.detect_anomalies(cropped_frame, space_boxes, avoid_boxes)
+                    else:
+                        # Test frames are already cropped
+                        box_results = self.detect_anomalies(frame, space_boxes, avoid_boxes)
                     
                     # Store all results from the combined box
                     if box_results.anomalies:
@@ -714,7 +789,14 @@ class SpaceObjectDetector:
                             if (x2 < main_x1 or x1 > main_x2 or 
                                 y2 < main_y1 or y1 > main_y2):
                                 # Pass the space box as a list to avoid 'numpy.int32' object is not iterable error
-                                box_results = self.detect_anomalies(frame, [space_box], avoid_boxes)
+                                if not is_test_frame:
+                                    # Crop frame for detect_anomalies
+                                    cropped_frame = gpu_crop_frame(frame, crop_left, crop_right)
+                                    box_results = self.detect_anomalies(cropped_frame, [space_box], avoid_boxes)
+                                else:
+                                    # Test frames are already cropped
+                                    box_results = self.detect_anomalies(frame, [space_box], avoid_boxes)
+                                
                                 if box_results.anomalies:
                                     all_anomalies.extend(box_results.anomalies)
                                     if 'anomaly_metrics' in box_results.metadata:
@@ -771,16 +853,20 @@ class SpaceObjectDetector:
             print(f"Error initializing model: {e}")
             return False
 
-    def _run_rcnn_detection(self, frame: np.ndarray) -> Dict:
+    def _run_rcnn_detection(self, frame: np.ndarray, is_gpu_tensor: bool = False) -> Dict:
         """Run RCNN detection on a frame."""
         start = time.time()
         
         # Log initial memory state
         #self.logger.log_memory_usage()
         
-        # Convert BGR numpy array directly to tensor (HWC -> CHW)
-        img_tensor = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
-        img_tensor = self.transform(img_tensor).unsqueeze(0).to(DEVICE)
+        if is_gpu_tensor:
+            # Frame is already a GPU tensor, use it directly
+            img_tensor = frame
+        else:
+            # Convert BGR numpy array directly to tensor (HWC -> CHW)
+            img_tensor = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
+            img_tensor = self.transform(img_tensor).unsqueeze(0).to(DEVICE)
         #self.logger.log_operation_time('rcnn_prep', time.time() - start)
         
         # Log memory after tensor creation
@@ -827,7 +913,8 @@ class SpaceObjectDetector:
         
         # We're keeping everything on GPU, so don't explicitly clean up
         # Just delete Python references to allow garbage collection when needed
-        del img_tensor
+        if not is_gpu_tensor:
+            del img_tensor
         del predictions
         torch.cuda.empty_cache()  
         
@@ -842,6 +929,25 @@ class SpaceObjectDetector:
         last_refresh_time = 0
         refresh_interval = 5.0  # Refresh constants every 5 seconds
         
+        # Check for PyTorch CUDA
+        use_gpu_model = torch.cuda.is_available()
+        if use_gpu_model:
+            print("Using GPU for RCNN model inference")
+        
+        # Check specifically for OpenCV CUDA support
+        has_opencv_cuda = False
+        try:
+            # Check if cv2.cuda.getCudaEnabledDeviceCount exists and returns at least 1
+            has_opencv_cuda = hasattr(cv2, 'cuda') and callable(getattr(cv2.cuda, 'getCudaEnabledDeviceCount', None)) and cv2.cuda.getCudaEnabledDeviceCount() > 0
+            if has_opencv_cuda:
+                print("Using OpenCV CUDA for frame cropping")
+            else:
+                print("OpenCV CUDA not available, using CPU cropping")
+        except Exception:
+            # If any error occurs during check, assume no CUDA support
+            has_opencv_cuda = False
+            print("Error checking OpenCV CUDA support, using CPU cropping")
+        
         while self.rcnn_worker_running:
             try:
                 # Get the current time
@@ -852,25 +958,52 @@ class SpaceObjectDetector:
                     self.refresh_constants()
                     last_refresh_time = current_time
                 
-                frame = self.rcnn_queue.get(timeout=1)
-            except Exception:
-                continue
+                # Get the next frame from the queue
+                try:
+                    frame_data = self.rcnn_queue.get(timeout=1)
+                    if isinstance(frame_data, tuple) and len(frame_data) == 3:
+                        # If we receive a tuple, it contains (frame, left, right)
+                        frame, left, right = frame_data
+                        
+                        # Use GPU cropping only if OpenCV CUDA is available
+                        if has_opencv_cuda:
+                            cropped_frame = gpu_crop_frame(frame, left, right)
+                            predictions = self._run_rcnn_detection(cropped_frame)
+                        else:
+                            # Fall back to CPU cropping
+                            cropped_frame = frame[:, left:-right]
+                            predictions = self._run_rcnn_detection(cropped_frame)
+                    else:
+                        # Backward compatibility - just a frame with no crop info
+                        frame = frame_data
+                        predictions = self._run_rcnn_detection(frame)
+                except queue.Empty:
+                    continue
+                
+                if frame_data is None:
+                    break
 
-            if frame is None:
-                break
-
-            # Run RCNN detection on the provided frame
-            predictions = self._run_rcnn_detection(frame)
-            self.last_rcnn_results = predictions
-            self.last_rcnn_frame = self.frame_count
-            self.rcnn_queue.task_done()
-            
-            # Update darkness detection state when RCNN results are refreshed
-            # Only do this in the worker thread to avoid blocking the main thread
-            self._update_darkness_state(frame)
-            
-            # We're keeping everything on GPU, so don't explicitly clean up
-            # Just delete Python references to allow garbage collection when needed
+                # Store results
+                self.last_rcnn_results = predictions
+                self.last_rcnn_frame = self.frame_count
+                self.rcnn_queue.task_done()
+                
+                # Update darkness detection state when RCNN results are refreshed
+                # Only do this in the worker thread to avoid blocking the main thread
+                if isinstance(frame_data, tuple) and len(frame_data) == 3:
+                    # Use the cropped frame for darkness detection
+                    self._update_darkness_state(cropped_frame)
+                else:
+                    # Use the original frame
+                    self._update_darkness_state(frame)
+                
+                # We're keeping everything on GPU, so don't explicitly clean up
+                # Just delete Python references to allow garbage collection when needed
+            except Exception as e:
+                print(f"Error in RCNN worker thread: {e}")
+                import traceback
+                traceback.print_exc()
+                time.sleep(0.1)  # Prevent tight error loop
 
     def set_rcnn_cycle(self, fps: int):
         """Update the RCNN detection cycle based on frame rate."""
@@ -939,6 +1072,49 @@ class SpaceObjectDetector:
         # Store the space mask and contours for reuse
         self.cached_space_mask = space_mask
         self.cached_space_contours = external_contours
+
+    def crop_and_prepare_for_rcnn(self, frame: np.ndarray, left: int, right: int) -> torch.Tensor:
+        """
+        Crop frame on GPU and prepare it for RCNN processing.
+        
+        Args:
+            frame: Input frame
+            left: Pixels to crop from left
+            right: Pixels to crop from right
+            
+        Returns:
+            PyTorch tensor ready for RCNN inference
+        """
+        # Check specifically for OpenCV CUDA support
+        has_opencv_cuda = False
+        try:
+            # Check if cv2.cuda.getCudaEnabledDeviceCount exists and returns at least 1
+            has_opencv_cuda = hasattr(cv2, 'cuda') and callable(getattr(cv2.cuda, 'getCudaEnabledDeviceCount', None)) and cv2.cuda.getCudaEnabledDeviceCount() > 0
+        except Exception:
+            # If any error occurs during check, assume no CUDA support
+            has_opencv_cuda = False
+        
+        # Fallback to CPU processing if no OpenCV CUDA support
+        if not has_opencv_cuda:
+            cropped = frame[:, left:-right]
+            img_tensor = torch.from_numpy(cropped).permute(2, 0, 1).float() / 255.0
+            img_tensor = self.transform(img_tensor).unsqueeze(0).to(DEVICE)
+            return img_tensor
+        
+        try:
+            # Crop on GPU
+            cropped = gpu_crop_frame(frame, left, right)
+            
+            # Convert to tensor and prepare for RCNN
+            img_tensor = torch.from_numpy(cropped).permute(2, 0, 1).float() / 255.0
+            img_tensor = self.transform(img_tensor).unsqueeze(0).to(DEVICE)
+            return img_tensor
+        except Exception:
+            # Silently fall back to CPU processing without error messages
+            cropped = frame[:, left:-right]
+            img_tensor = torch.from_numpy(cropped).permute(2, 0, 1).float() / 255.0
+            img_tensor = self.transform(img_tensor).unsqueeze(0).to(DEVICE)
+            return img_tensor
 
 class FastRCNNPredictor(torch.nn.Module):
     """Simple FastRCNN prediction head."""

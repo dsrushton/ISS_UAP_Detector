@@ -73,7 +73,7 @@ class Constants:
             'earth': 0.75,
             'iss': 0.75,
             'lf': 0.99,
-            'td': 0.50,
+            'td': 0.25,
             'sun': 0.75,
             'nofeed': 0.25,
             'panel': 0.75

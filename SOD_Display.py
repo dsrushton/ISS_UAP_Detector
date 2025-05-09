@@ -574,26 +574,33 @@ class DisplayManager:
                 # Resize debug view to match frame height
                 debug = cv2.resize(debug, (int(debug_w * frame_h / debug_h), frame_h))
                 debug_h, debug_w = debug.shape[:2]
-                
-            # Create combined view buffer if needed or size has changed
-            if not hasattr(self, 'combined_buffer') or self.combined_buffer is None or self.combined_buffer.shape[:2] != (frame_h, frame_w + debug_w):
-                self.combined_buffer = np.zeros((frame_h, frame_w + debug_w, 3), dtype=np.uint8)
-                
+            
+            total_width = debug_w + frame_w
+            
+            # Initialize combined_frame_buffer if it doesn't exist or dimensions have changed
+            if not hasattr(self, 'combined_frame_buffer') or self.combined_frame_buffer is None or self.combined_frame_buffer.shape[:2] != (frame_h, total_width):
+                self.combined_frame_buffer = np.zeros((frame_h, total_width, 3), dtype=np.uint8)
+            else:
+                # Clear the buffer instead of reallocating
+                self.combined_frame_buffer.fill(0)
+            
             # Store dimensions for padding calculations
-            self.x_padding_offset = (1920 - (frame_w + debug_w)) // 2
+            self.x_padding_offset = (1920 - total_width) // 2
             self.y_padding_offset = (1080 - frame_h) // 2
                 
-            # Copy debug view to left side and frame to right side
-            self.combined_buffer[:, :debug_w] = debug
-            self.combined_buffer[:, debug_w:] = frame
+            # Copy debug view to left side using np.copyto instead of slice assignment
+            np.copyto(self.combined_frame_buffer[:, :debug_w], debug)
+            
+            # Copy frame to right side using np.copyto instead of slice assignment
+            np.copyto(self.combined_frame_buffer[:, debug_w:], frame)
             
             # Draw streaming indicator (red circle) if streaming
             if self.is_streaming:
                 # Always show the streaming indicator when streaming is active
-                cv2.circle(self.combined_buffer, (30, 30), 15, (0, 0, 255), -1)
+                cv2.circle(self.combined_frame_buffer, (30, 30), 15, (0, 0, 255), -1)
             
             # Pad the combined buffer to 1920x1080
-            padded_combined = self._pad_to_1920x1080(self.combined_buffer)
+            padded_combined = self._pad_to_1920x1080(self.combined_frame_buffer)
 
             # Only draw avoid box if actively drawing to save processing time
             if self.drawing_avoid_box and self.current_avoid_box:

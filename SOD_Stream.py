@@ -10,10 +10,32 @@ import numpy as np
 import time
 import threading
 import queue
+import signal
 from typing import Optional
+
+# Import YouTube API Manager for broadcast rotation
+try:
+    from SOD_YouTubeAPI import YouTubeAPIManager, GOOGLE_API_AVAILABLE
+except ImportError:
+    GOOGLE_API_AVAILABLE = False
 
 # Constants
 DEFAULT_RTMP_URL = "rtmp://a.rtmp.youtube.com/live2"
+
+# Try to import cycling settings from youtube_config
+try:
+    from youtube_config import (
+        ENABLE_STREAM_CYCLING,
+        STREAM_CYCLE_SECONDS,
+        RESTART_DELAY_SECONDS
+    )
+    CYCLING_CONFIG_LOADED = True
+except ImportError:
+    # Default values if config doesn't exist
+    ENABLE_STREAM_CYCLING = True
+    STREAM_CYCLE_SECONDS = 11 * 3600 + 55 * 60  # 11h 55m in seconds
+    RESTART_DELAY_SECONDS = 20  # Seconds to wait after stopping before restarting
+    CYCLING_CONFIG_LOADED = False
 
 class StreamManager:
     """Manages streaming video to YouTube."""
@@ -44,7 +66,43 @@ class StreamManager:
         self.last_frame_time = 0
         self.frame_interval = 1.0 / self.target_fps
         
+        # Auto-restart streaming variables
+        self.auto_restart = ENABLE_STREAM_CYCLING
+        self.stream_cycle_timer = None
+        self.cycle_count = 0
+        
+        # Initialize YouTube API Manager for broadcast rotation if available
+        self.youtube_api = None
+        if GOOGLE_API_AVAILABLE:
+            try:
+                self.youtube_api = YouTubeAPIManager()
+                if self.youtube_api.authorized:
+                    # If API is available and authorized, try to load or create a stream
+                    if self.youtube_api.load_or_create_stream():
+                        # Try to get the stream key
+                        api_stream_key = self.youtube_api.get_stream_key()
+                        if api_stream_key:
+                            self.stream_key = api_stream_key
+                            print(f"Using stream key from YouTube API: {self.stream_key[:4]}...")
+                    
+                    # Create initial broadcast
+                    self.youtube_api.create_broadcast()
+            except Exception as e:
+                print(f"Error initializing YouTube API: {str(e)}")
+                self.youtube_api = None
+        
         print(f"StreamManager initialized with frame size: {frame_width}x{frame_height}, target FPS: {self.target_fps}")
+        if self.auto_restart:
+            hours = STREAM_CYCLE_SECONDS // 3600
+            minutes = (STREAM_CYCLE_SECONDS % 3600) // 60
+            print(f"Auto-restart streaming: Enabled (will cycle every {hours}h {minutes}m)")
+        else:
+            print("Auto-restart streaming: Disabled")
+            
+        if self.youtube_api and self.youtube_api.authorized:
+            print("YouTube API integration: Active (broadcasts will be properly rotated)")
+        else:
+            print("YouTube API integration: Not available (basic stream cycling only)")
     
     def set_software_encoding(self, use_software: bool) -> None:
         """Set whether to use software encoding instead of hardware encoding."""
@@ -54,6 +112,113 @@ class StreamManager:
     def set_logger(self, logger):
         """Set the logger reference for tracking stream frames."""
         self.logger = logger
+    
+    def _start_cycle_timer(self) -> None:
+        """Start a timer to cycle the stream after the specified duration."""
+        if not self.auto_restart:
+            return
+            
+        if self.stream_cycle_timer:
+            # Cancel any existing timer
+            self.stream_cycle_timer.cancel()
+            
+        # Create a new timer for STREAM_CYCLE_SECONDS
+        self.stream_cycle_timer = threading.Timer(STREAM_CYCLE_SECONDS, self._cycle_stream)
+        self.stream_cycle_timer.daemon = True
+        self.stream_cycle_timer.start()
+        
+        # Calculate the cycle end time
+        cycle_end_time = time.strftime('%Y-%m-%d %H:%M:%S', 
+                                       time.localtime(time.time() + STREAM_CYCLE_SECONDS))
+        
+        print(f"Stream cycle timer started. Stream will restart at {cycle_end_time}")
+    
+    def _cycle_stream(self) -> None:
+        """Stop and restart the stream to work around YouTube's duration limits."""
+        if not self.is_streaming:
+            return
+            
+        self.cycle_count += 1
+        print(f"\n*** CYCLING STREAM #{self.cycle_count} (duration limit reached) ***")
+        
+        # Save the current frames queue and stream key for restart
+        current_frames_queue = self.frames_queue
+        current_stream_key = self.stream_key
+        
+        # If using YouTube API, create a new broadcast before stopping the stream
+        if self.youtube_api and self.youtube_api.authorized:
+            print("Creating new YouTube broadcast for rotation...")
+            success, broadcast_id = self.youtube_api.rotate_broadcast()
+            if success:
+                print(f"New broadcast created and bound to stream (ID: {broadcast_id})")
+            else:
+                print("Failed to create new broadcast, but will continue with stream restart")
+        
+        # Stop the stream gracefully (sending SIGINT to FFmpeg for clean shutdown)
+        self._graceful_stop_streaming()
+        
+        # Wait briefly to ensure YouTube registers the end of the stream
+        print(f"Waiting {RESTART_DELAY_SECONDS} seconds before restarting stream...")
+        time.sleep(RESTART_DELAY_SECONDS)
+        
+        # Restart the stream with the same settings
+        print("Restarting stream with the same settings...")
+        self.stream_key = current_stream_key
+        self.start_streaming(current_frames_queue)
+    
+    def _graceful_stop_streaming(self) -> bool:
+        """Stop the active stream by sending SIGINT to FFmpeg for clean shutdown."""
+        if not self.is_streaming:
+            print("No active stream to stop")
+            return True
+            
+        print("Gracefully stopping stream with SIGINT...")
+        self.is_streaming = False
+        
+        # Wait for the streaming thread to finish
+        if self.stream_thread and self.stream_thread.is_alive():
+            self.stream_thread.join(timeout=5.0)
+            
+        # Close the FFmpeg process with SIGINT for graceful shutdown
+        if self.ffmpeg_process and self.ffmpeg_process.poll() is None:
+            try:
+                # On Windows, we need to use CTRL_C_EVENT
+                if os.name == 'nt':
+                    os.kill(self.ffmpeg_process.pid, signal.CTRL_C_EVENT)
+                else:
+                    # On Unix systems, use SIGINT
+                    os.kill(self.ffmpeg_process.pid, signal.SIGINT)
+                
+                # Give FFmpeg time to shut down gracefully
+                print("Waiting for FFmpeg to shut down gracefully...")
+                self.ffmpeg_process.wait(timeout=10.0)
+                
+                # If it's still running, terminate it
+                if self.ffmpeg_process.poll() is None:
+                    print("FFmpeg did not exit after SIGINT, terminating...")
+                    self.ffmpeg_process.terminate()
+                    self.ffmpeg_process.wait(timeout=2.0)
+                    
+                    # If it's still running, kill it
+                    if self.ffmpeg_process.poll() is None:
+                        print("FFmpeg did not exit after termination, killing process...")
+                        self.ffmpeg_process.kill()
+                        self.ffmpeg_process.wait(timeout=1.0)
+                
+            except Exception as e:
+                print(f"Error stopping FFmpeg process: {str(e)}")
+                
+            self.ffmpeg_process = None
+            
+        # Calculate stream duration
+        if self.stream_start_time > 0:
+            duration = time.time() - self.stream_start_time
+            hours, remainder = divmod(duration, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            print(f"Stream stopped after {int(hours)}h {int(minutes)}m {int(seconds)}s")
+            
+        print("Stream stopped successfully")
+        return True
     
     def start_streaming(self, frames_queue: queue.Queue) -> bool:
         """Start streaming to YouTube using the configured stream key."""
@@ -156,7 +321,26 @@ class StreamManager:
                         # Try to get a frame, wait a bit longer if queue is empty to avoid black frames
                         try:
                             # Use a longer timeout (50ms instead of 10ms) to give more time for frames to arrive
-                            frame = self.frames_queue.get(timeout=0.05)
+                            queue_item = self.frames_queue.get(timeout=0.05)
+                            
+                            # Process the queue item based on its type
+                            if isinstance(queue_item, tuple) and len(queue_item) == 3:
+                                # New format: tuple of (type, frame/pool, index)
+                                item_type, item_data, item_idx = queue_item
+                                
+                                if item_type == "buffer_idx" and item_data is not None:
+                                    # Item is a buffer index in a frame pool
+                                    frame_pool = item_data
+                                    buffer_idx = item_idx
+                                    
+                                    # Get the frame from the pool
+                                    frame = frame_pool.get_buffer(buffer_idx)
+                                else:
+                                    # Traditional frame
+                                    frame = item_data
+                            else:
+                                # Legacy format: direct frame
+                                frame = queue_item
                             
                             # Reset black frame counter when we get a real frame
                             if black_frame_count > 0:
@@ -256,6 +440,10 @@ class StreamManager:
             self.stream_thread.daemon = True
             self.stream_thread.start()
             
+            # Always start the cycle timer if auto-restart is enabled
+            if self.auto_restart:
+                self._start_cycle_timer()
+            
             print("Streaming started successfully")
             return True
             
@@ -266,52 +454,26 @@ class StreamManager:
     
     def stop_streaming(self) -> bool:
         """Stop the active stream."""
-        if not self.is_streaming:
-            print("No active stream to stop")
-            return True
+        # Cancel cycle timer if it exists
+        if self.stream_cycle_timer:
+            self.stream_cycle_timer.cancel()
+            self.stream_cycle_timer = None
             
-        print("Stopping stream...")
-        self.is_streaming = False
+        return self._graceful_stop_streaming()
+            
+    def stream_frame(self, frame, make_copy: bool = False, frame_pool=None, buffer_idx=None) -> bool:
+        """
+        Add a frame to the streaming queue with optimized handling.
         
-        # Wait for the streaming thread to finish
-        if self.stream_thread and self.stream_thread.is_alive():
-            self.stream_thread.join(timeout=5.0)
+        Args:
+            frame: The frame to stream, or None if using buffer_idx
+            make_copy: Whether to make a copy of the frame (ignored if using buffer_idx)
+            frame_pool: Reference to a FrameBufferPool if using buffer indices
+            buffer_idx: Index of buffer in the frame_pool to use instead of direct frame
             
-        # Close the FFmpeg process
-        if self.ffmpeg_process:
-            try:
-                # Close stdin to signal end of input
-                if self.ffmpeg_process.stdin:
-                    self.ffmpeg_process.stdin.close()
-                
-                # Wait for the process to terminate
-                self.ffmpeg_process.wait(timeout=5.0)
-                
-                # If it's still running, terminate it
-                if self.ffmpeg_process.poll() is None:
-                    self.ffmpeg_process.terminate()
-                    self.ffmpeg_process.wait(timeout=2.0)
-                    
-                    # If it's still running, kill it
-                    if self.ffmpeg_process.poll() is None:
-                        self.ffmpeg_process.kill()
-                        self.ffmpeg_process.wait(timeout=1.0)
-                
-            except Exception as e:
-                print(f"Error stopping FFmpeg process: {str(e)}")
-                
-            self.ffmpeg_process = None
-            
-        # Calculate stream duration
-        if self.stream_start_time > 0:
-            duration = time.time() - self.stream_start_time
-            print(f"Stream stopped after {duration:.1f} seconds")
-            
-        print("Stream stopped successfully")
-        return True
-            
-    def stream_frame(self, frame: np.ndarray) -> bool:
-        """Add a frame to the streaming queue with optimized handling."""
+        Returns:
+            True if successful, False otherwise
+        """
         if not self.is_streaming:
             return False
         
@@ -323,17 +485,45 @@ class StreamManager:
         current_time = time.time()
         self.last_frame_time = current_time
 
-        # Frame should already be 1920x1080 from DisplayManager, no resize needed.
-        # needs_resize = frame.shape[0] != self.frame_height or frame.shape[1] != self.frame_width # Removed check
-
         try:
-            # Check if queue is getting full, if so drop frames to prevent lag
-            if self.frames_queue.qsize() > 240:  # 4 seconds buffer, allow some accumulation
-                # Dropping frames when queue gets too full
-                return True  # Successfully handled (by dropping)
+            # Get current queue size
+            current_queue_size = self.frames_queue.qsize()
+            
+            # Calculate estimated time to process the current queue
+            # Max latency threshold is 0.5 seconds
+            MAX_LATENCY_THRESHOLD = 0.5  # 500ms max end-to-end latency
+            
+            # Calculate estimated queue processing time
+            queue_time = current_queue_size * self.frame_interval
+            
+            if queue_time > MAX_LATENCY_THRESHOLD:
+                # Queue would exceed latency threshold if we add this frame
+                # Calculate how many frames to drop to get back under threshold
+                frames_to_drop = int((queue_time - (MAX_LATENCY_THRESHOLD * 0.8)) / self.frame_interval)
+                frames_to_drop = max(1, min(frames_to_drop, current_queue_size))  # At least 1, at most queue size
+                
+                # Drop oldest frames from the queue
+                for _ in range(frames_to_drop):
+                    try:
+                        self.frames_queue.get_nowait()  # Remove oldest frame
+                        self.frames_queue.task_done()
+                    except queue.Empty:
+                        break  # Queue emptied during dropping
+                
+                if frames_to_drop > 1:
+                    print(f"Dropped {frames_to_drop} oldest frames to maintain latency (queue: {current_queue_size} frames, {queue_time:.2f}s)")
 
-            # Add frame to queue (use copy to avoid race conditions)
-            self.frames_queue.put(frame.copy(), timeout=0.1)
+            # Determine what to queue based on inputs
+            if frame_pool is not None and buffer_idx is not None:
+                # Using frame buffer pool - queue the buffer index
+                item_to_queue = ("buffer_idx", frame_pool, buffer_idx)
+                self.frames_queue.put(item_to_queue, timeout=0.1)
+            else:
+                # Traditional frame queueing
+                frame_to_queue = frame.copy() if make_copy else frame
+                item_to_queue = ("frame", frame_to_queue, None)
+                self.frames_queue.put(item_to_queue, timeout=0.1)
+            
             self.frames_sent += 1
 
             # Log the frame for framerate tracking
@@ -343,8 +533,8 @@ class StreamManager:
             return True
 
         except queue.Full:
-            # Queue is full, which means streaming is falling behind
-            # This is normal during high CPU load
+            # Queue is full even after dropping frames
+            # This should be rare now that we're proactively managing queue size
             return True  # Successfully handled (by dropping)
         except Exception as e:
             print(f"Error adding frame to stream queue: {str(e)}")
