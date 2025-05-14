@@ -228,7 +228,23 @@ class VideoManager:
             
         # Get next available video number
         self.current_video_number = self.get_next_video_number()
-        filename = os.path.join(VIDEO_SAVE_DIR, f"{self.current_video_number:05d}.avi")
+        
+        # Generate filename with timestamp if stream manager is available
+        timestamp_str = ""
+        try:
+            from SOD_Main import SpaceObjectDetectionSystem
+            if hasattr(SpaceObjectDetectionSystem, 'stream') and SpaceObjectDetectionSystem.stream:
+                stream = SpaceObjectDetectionSystem.stream
+                if hasattr(stream, 'stream_start_time') and stream.stream_start_time > 0:
+                    # Format the start time as YYYYMMDD_HHMMSS
+                    start_time = time.localtime(stream.stream_start_time)
+                    timestamp_str = time.strftime("%Y%m%d_%H%M%S_", start_time)
+        except (ImportError, AttributeError):
+            # Fall back to current time if we can't get the stream start time
+            timestamp_str = time.strftime("%Y%m%d_%H%M%S_", time.localtime())
+        
+        # Create filename with timestamp and video number
+        filename = os.path.join(VIDEO_SAVE_DIR, f"{timestamp_str}{self.current_video_number:05d}.avi")
         
         # Check buffer status
         buffer_length = len(self.frame_buffer)
@@ -261,6 +277,10 @@ class VideoManager:
             self.frames_since_start = frames_written
             self.frames_since_detection = 0
             self.recording = True
+            
+            # Store current filename for logging (without path)
+            self.current_filename = os.path.basename(filename)
+            
             return True
         else:
             self.logger.log_error("Failed to start video writer")

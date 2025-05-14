@@ -9,6 +9,7 @@ import subprocess
 from PIL import Image
 import os
 from typing import Optional, Tuple
+import re
 
 from SOD_Constants import (
     RAW_SUBDIR,
@@ -18,7 +19,7 @@ from SOD_Constants import (
 
 def get_best_stream_url(youtube_url: str) -> str:
     """
-    Get the highest quality stream URL from a YouTube link using yt-dlp.
+    Get the stream URL from a YouTube link using yt-dlp.
     
     Args:
         youtube_url (str): YouTube video URL
@@ -29,26 +30,58 @@ def get_best_stream_url(youtube_url: str) -> str:
     if not youtube_url or not isinstance(youtube_url, str):
         print("Invalid YouTube URL provided")
         return None
-        
+    
     try:
+        # Use format 136 (720p MP4 video) which we originally used
+        print("Getting stream URL using format 136 (720p MP4)")
+        cmd = ['yt-dlp', '-f', '136', '-g', '--quiet', '--no-warnings', 
+               '--no-progress', '--no-check-certificates']
+                
+        # Add the YouTube URL
+        cmd.append(youtube_url)
+        
         result = subprocess.run(
-            ['yt-dlp', '-f', 'best', '-g', '--quiet', '--no-warnings', 
-             '--no-progress', '--no-check-certificates', youtube_url],
+            cmd,
             capture_output=True, text=True, check=True,
             timeout=30  # Add timeout
         )
+        
         url = result.stdout.strip()
         if not url:
             print("Empty URL returned from yt-dlp")
             return None
+            
+        print("Successfully retrieved 720p MP4 video stream URL")
         return url
         
     except subprocess.TimeoutExpired:
         print("Timeout while fetching stream URL")
         return None
     except subprocess.CalledProcessError as e:
-        print(f"Error fetching stream URL: {e.stderr}")
-        return None
+        print(f"Error fetching 720p MP4 stream URL: {e.stderr}")
+        # Try a fallback to 'best' format
+        try:
+            print("Trying fallback with 'best' format...")
+            cmd = ['yt-dlp', '-f', 'best', '-g', '--quiet', '--no-warnings', 
+                  '--no-progress', '--no-check-certificates']
+                
+            # Add the YouTube URL
+            cmd.append(youtube_url)
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True, text=True, check=True,
+                timeout=30
+            )
+            url = result.stdout.strip()
+            if not url:
+                print("Empty URL returned from best format fallback")
+                return None
+            print("Successfully retrieved best available stream URL")
+            return url
+        except Exception as fallback_e:
+            print(f"Fallback also failed: {str(fallback_e)}")
+            return None
     except Exception as e:
         print(f"Unexpected error fetching stream URL: {str(e)}")
         return None

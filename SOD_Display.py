@@ -19,7 +19,7 @@ class DisplayManager:
     """Manages visualization of detection results and debug information."""
     
     def __init__(self):
-        """Initialize the display manager."""
+        """Initialize display manager."""
         # Initialize state variables
         self.debug_view = None
         self.last_save_time = 0
@@ -50,7 +50,7 @@ class DisplayManager:
         # Set initial window size and title
         self._set_window_size()
         self._update_window_title()
-    
+
     def set_logger(self, logger):
         """Set the logger instance."""
         self.logger = logger
@@ -61,10 +61,9 @@ class DisplayManager:
         self._update_window_title()
 
     def _set_window_size(self):
-        """Set the window to the correct size."""
-        # Use 1920x1080 for the window size to match our padded output
-        cv2.resizeWindow('ISS Object Detection', 1920, 1080)
-        # No need for waitKey here, it will be handled in the main loop
+        """Set the window to the correct size for the full combined view."""
+        # Use 2560x720 for the window size to fit both views at full resolution
+        cv2.resizeWindow('ISS Object Detection', 2560, 720)
 
     def _update_window_title(self) -> None:
         """Update the window title with streaming status."""
@@ -78,36 +77,21 @@ class DisplayManager:
 
     def _mouse_callback(self, event, x, y, flags, param):
         """Handle mouse events for avoid box drawing."""
-        # Check if we have padding offsets defined
-        has_padding = hasattr(self, 'x_padding_offset') and hasattr(self, 'y_padding_offset')
-        
-        # Determine if the click is in the main view (right side)
-        # The combined view has the debug view on the left and the main view on the right
-        # We need to account for padding if it exists
-        debug_width = CROPPED_WIDTH  # Width of debug view (939 pixels)
-        
-        if has_padding:
-            # If we have padding, we need to check if the click is within the actual main view area
-            # The main view starts at x_padding_offset + debug_width
-            main_view_start = self.x_padding_offset + debug_width
+        # For the side-by-side layout, determine which side the click is on
+        # The debug view is on the left, main view on the right
+        # Get the current frame width (which is now the full 1280)
+        main_view_width = 1280  # Main view is now fixed at 1280px
+        debug_view_width = 1280  # Debug view is also 1280px
             
-            # Check if click is in the main view area
-            if x < main_view_start or x >= main_view_start + debug_width:
-                # Click is outside the main view area
-                return
-                
-            # Adjust coordinates to be relative to the main view (removing padding)
-            main_x = x - main_view_start
-            main_y = y - self.y_padding_offset
-        else:
-            # No padding, use the simple check
-            if x < debug_width:
-                # Ignore clicks in the left half (debug view)
-                return
-                
-            # Adjust x coordinate to be relative to the main view
-            main_x = x - debug_width
-            main_y = y
+        # The combined view has the debug view on the left and the main view on the right
+        # Check if click is in the right half (main view)
+        if x < debug_view_width:
+            # Ignore clicks in the left side (debug view)
+            return
+            
+        # Adjust coordinates to be relative to the main view
+        main_x = x - debug_view_width
+        main_y = y
             
         if event == cv2.EVENT_LBUTTONDOWN:
             # Start drawing avoid box
@@ -187,18 +171,22 @@ class DisplayManager:
         # The buffers don't need to be cleared here because they'll be reset in the
         # specific create_debug_view method with fill(0) or overwritten entirely
 
-    def create_debug_message_view(self, message: str) -> np.ndarray:
+    def create_debug_message_view(self, message: str, frame_width: int) -> np.ndarray:
         """Create a black debug view with centered text message.
         
         Args:
             message: Message to display, can contain \n for line breaks
+            frame_width: Width of the frame for centering text
             
         Returns:
             Black debug view with centered text
         """
         # Create or reuse a black canvas buffer
-        if not hasattr(self, 'message_buffer') or self.message_buffer is None:
-            self.message_buffer = np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8)
+        canvas_height = 720
+        canvas_width = frame_width
+        
+        if not hasattr(self, 'message_buffer') or self.message_buffer is None or self.message_buffer.shape != (canvas_height, canvas_width, 3):
+            self.message_buffer = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
         else:
             # Clear the existing buffer
             self.message_buffer.fill(0)
@@ -219,13 +207,13 @@ class DisplayManager:
             line_heights.append(text_height + 10)  # Add 10px padding between lines
             
         total_height = sum(line_heights)
-        start_y = (720 - total_height) // 2
+        start_y = (canvas_height - total_height) // 2
         
         # Draw each line centered horizontally
         current_y = start_y
         for i, line in enumerate(lines):
             (text_width, _), _ = cv2.getTextSize(line, font, font_scale, thickness)
-            text_x = (CROPPED_WIDTH - text_width) // 2
+            text_x = (canvas_width - text_width) // 2
             
             # Draw text with shadow for better visibility
             # Draw shadow
@@ -240,22 +228,28 @@ class DisplayManager:
 
     def create_debug_view(self, frame: np.ndarray, space_data: list) -> np.ndarray:
         """Create debug visualization using the same structure as main view."""
+        # Import constants for correct dimensions
+        from SOD_Constants import DEBUG_VIEW_ENABLED, CROPPED_WIDTH
+        
+        # Get frame dimensions to ensure we use the actual width
+        frame_height, frame_width = frame.shape[:2] if frame is not None else (720, CROPPED_WIDTH)
+        
         if not DEBUG_VIEW_ENABLED:
-            return np.zeros((720, CROPPED_WIDTH, 3), dtype=np.uint8)
+            return np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
             
         # Handle special cases where we need to show a message instead of space data
         if hasattr(self, 'latest_detections') and self.latest_detections is not None:
             # Check for darkness case
             if self.latest_detections.darkness_detected:
-                return self.create_debug_message_view("No \"Space\" regions to analyze currently\n\nTry back soon\n\n\n\nISS In Darkness")
+                return self.create_debug_message_view("No \"Space\" regions to analyze currently\n\nTry back soon\n\n\n\nISS In Darkness", frame_width=frame_width)
                 
             # Check for no feed case
             if 'nofeed' in self.latest_detections.rcnn_boxes:
-                return self.create_debug_message_view("No \"Space\" regions to analyze currently\n\nTry back soon\n\n\n\nStream Interrupted")
+                return self.create_debug_message_view("No \"Space\" regions to analyze currently\n\nTry back soon\n\n\n\nStream Interrupted", frame_width=frame_width)
                 
         # Check if space_data is missing or empty (no space boxes to process)
         if not space_data:
-            return self.create_debug_message_view("No \"Space\" regions to analyze currently\n\nTry back soon\n\n\n\n")
+            return self.create_debug_message_view("No \"Space\" regions to analyze currently\n\nTry back soon\n\n\n\n", frame_width=frame_width)
             
         #debug_start = time.time()
         
@@ -265,12 +259,25 @@ class DisplayManager:
         # Ensure buffers are allocated
         self._ensure_debug_buffers(frame.shape)
         
-        # Copy raw frame content for space regions
-        np.copyto(self.debug_buffer, frame, where=space_mask[:, :, None] > 0)
+        # Handle size mismatch between frame and mask
+        if space_mask is not None and space_mask.shape[:2] != frame.shape[:2]:
+            # Resize the mask to match the frame dimensions
+            space_mask = cv2.resize(space_mask, (frame.shape[1], frame.shape[0]), 
+                                  interpolation=cv2.INTER_NEAREST)
+            
+        # Create mask for numpy.copyto to match frame dimensions
+        if space_mask is not None:
+            mask_3d = space_mask[:, :, None] > 0
+            # Copy raw frame content for space regions
+            np.copyto(self.debug_buffer, frame, where=mask_3d)
+        else:
+            # If no mask, just use a blank debug view
+            self.debug_buffer.fill(0)
         
         #space_start = time.time()
         # Step 2: Draw the space region outline (blue)
-        cv2.drawContours(self.debug_buffer, space_contours, -1, CLASS_COLORS['space'], 1)  # Reduced thickness to 1
+        if space_contours is not None:
+            cv2.drawContours(self.debug_buffer, space_contours, -1, CLASS_COLORS['space'], 1)  # Reduced thickness to 1
         
         # Step 2.5: Draw the space bounding boxes from RCNN detections
         if boxes and len(boxes) > 0:
@@ -300,17 +307,20 @@ class DisplayManager:
         
         #anomaly_start = time.time()
         # Step 3: Draw detection contours directly on the debug buffer, but only within the space mask
-        if contours is not None and len(contours) > 0:
+        if contours is not None and len(contours) > 0 and space_mask is not None:
             # Skip creating a new mask - use the existing space_mask directly
             for contour in contours:
                 # Check if contour is within the space mask - use a faster approach
                 # Get bounding rect of contour
                 x, y, w, h = cv2.boundingRect(contour)
                 # Check if the bounding rect overlaps with space mask
-                roi = space_mask[y:y+h, x:x+w]
-                if roi.size > 0 and np.any(roi > 0):
-                    # Draw the contour with a more visible color and thickness
-                    cv2.drawContours(self.debug_buffer, [contour], -1, CONTOUR_COLOR, 1)  # Reduced thickness to 1
+                # Make sure to check bounds first
+                if (y >= 0 and y+h <= space_mask.shape[0] and 
+                    x >= 0 and x+w <= space_mask.shape[1]):
+                    roi = space_mask[y:y+h, x:x+w]
+                    if roi.size > 0 and np.any(roi > 0):
+                        # Draw the contour with a more visible color and thickness
+                        cv2.drawContours(self.debug_buffer, [contour], -1, CONTOUR_COLOR, 1)  # Reduced thickness to 1
         
         # Step 4: Draw anomaly boxes and metrics
         if anomalies is not None and len(anomalies) > 0:
@@ -545,14 +555,14 @@ class DisplayManager:
     def create_combined_view(self, frame: np.ndarray, debug: np.ndarray) -> np.ndarray:
         """
         Create a combined view with debug view on left and main view on right.
-        Always returns a padded 1920x1080 frame.
+        Displays both views at full resolution without scaling.
         
         Args:
             frame: The main view frame (annotated with detections)
             debug: The debug view frame
             
         Returns:
-            Combined view with debug on left, main view on right, padded to 1920x1080
+            Combined view with debug on left, main view on right
         """
         try:
             combined_start = time.time()
@@ -569,61 +579,54 @@ class DisplayManager:
             frame_h, frame_w = frame.shape[:2]
             debug_h, debug_w = debug.shape[:2]
             
-            # Ensure debug view is the same height as frame
-            if debug_h != frame_h:
-                # Resize debug view to match frame height
-                debug = cv2.resize(debug, (int(debug_w * frame_h / debug_h), frame_h))
-                debug_h, debug_w = debug.shape[:2]
+            # Print dimensions for debugging
+            print(f"Combined view - Frame: {frame_w}x{frame_h}, Debug: {debug_w}x{debug_h}")
             
+            # Create combined frame at full resolution (no scaling)
             total_width = debug_w + frame_w
+            combined_frame = np.zeros((frame_h, total_width, 3), dtype=np.uint8)
             
-            # Initialize combined_frame_buffer if it doesn't exist or dimensions have changed
-            if not hasattr(self, 'combined_frame_buffer') or self.combined_frame_buffer is None or self.combined_frame_buffer.shape[:2] != (frame_h, total_width):
-                self.combined_frame_buffer = np.zeros((frame_h, total_width, 3), dtype=np.uint8)
-            else:
-                # Clear the buffer instead of reallocating
-                self.combined_frame_buffer.fill(0)
-            
-            # Store dimensions for padding calculations
-            self.x_padding_offset = (1920 - total_width) // 2
-            self.y_padding_offset = (1080 - frame_h) // 2
+            # Store dimensions for coordinate calculations
+            self.x_padding_offset = 0
+            self.y_padding_offset = 0
                 
-            # Copy debug view to left side using np.copyto instead of slice assignment
-            np.copyto(self.combined_frame_buffer[:, :debug_w], debug)
+            # Copy debug view to left side
+            combined_frame[:, :debug_w] = debug
             
-            # Copy frame to right side using np.copyto instead of slice assignment
-            np.copyto(self.combined_frame_buffer[:, debug_w:], frame)
+            # Copy frame to right side
+            combined_frame[:, debug_w:] = frame
             
             # Draw streaming indicator (red circle) if streaming
             if self.is_streaming:
                 # Always show the streaming indicator when streaming is active
-                cv2.circle(self.combined_frame_buffer, (30, 30), 15, (0, 0, 255), -1)
+                cv2.circle(combined_frame, (30, 30), 15, (0, 0, 255), -1)
             
-            # Pad the combined buffer to 1920x1080
-            padded_combined = self._pad_to_1920x1080(self.combined_frame_buffer)
-
-            # Only draw avoid box if actively drawing to save processing time
+            # Draw the active avoid box if being drawn
             if self.drawing_avoid_box and self.current_avoid_box:
+                from SOD_Constants import AVOID_BOX_COLOR, AVOID_BOX_THICKNESS
                 x, y, w, h = self.current_avoid_box
-
+                
                 # Draw on the right half (main view) with adjusted coordinates
-                cv2.rectangle(padded_combined,
-                             (x + 939 + self.x_padding_offset, y + self.y_padding_offset),
-                             (x + w + 939 + self.x_padding_offset, y + h + self.y_padding_offset),
-                             AVOID_BOX_COLOR, AVOID_BOX_THICKNESS)
-
-            return padded_combined
+                right_view_start = debug_w  # Debug view width
+                cv2.rectangle(combined_frame,
+                            (x + right_view_start, y),
+                            (x + w + right_view_start, y + h),
+                            AVOID_BOX_COLOR, AVOID_BOX_THICKNESS)
+            
+            # No padding needed - return the combined frame at full resolution
+            return combined_frame
             
         except Exception as e:
+            print(f"Error in create_combined_view: {str(e)}")
             # Try to return just the frame if possible
             try:
                 if frame is not None:
-                    return self._pad_to_1920x1080(frame)
+                    return frame
             except:
                 pass
                 
-            # Last resort - return a black frame of the right size
-            return np.zeros((1080, 1920, 3), dtype=np.uint8)
+            # Last resort - return a black frame of reasonable size
+            return np.zeros((720, 2560, 3), dtype=np.uint8)
 
     def _pad_to_1920x1080(self, frame: np.ndarray) -> np.ndarray:
         """
@@ -639,28 +642,37 @@ class DisplayManager:
                 
             h, w = frame.shape[:2]
             
-            # Create a black canvas of 1920x1080 - reuse buffer if possible
-            if not hasattr(self, 'padded_buffer') or self.padded_buffer is None or self.padded_buffer.shape != (1080, 1920, 3):
-                self.padded_buffer = np.zeros((1080, 1920, 3), dtype=np.uint8)
-            else:
-                # Clear the buffer instead of creating a new one
-                self.padded_buffer.fill(0)
+            # Always create a fresh 1920x1080 black canvas
+            padded_buffer = np.zeros((1080, 1920, 3), dtype=np.uint8)
             
             # Calculate centering offsets
-            x_offset = (1920 - w) // 2
-            y_offset = (1080 - h) // 2
+            x_offset = max(0, (1920 - w) // 2)
+            y_offset = max(0, (1080 - h) // 2)
             
             # Store offsets for later use
             self.x_padding_offset = x_offset
             self.y_padding_offset = y_offset
             
+            # If frame is wider than 1920, crop it
+            if w > 1920:
+                # Crop from center
+                crop_start = (w - 1920) // 2
+                frame = frame[:, crop_start:crop_start+1920]
+                w = 1920
+                x_offset = 0
+            
+            # If frame is taller than 1080, crop it
+            if h > 1080:
+                # Crop from center
+                crop_start = (h - 1080) // 2
+                frame = frame[crop_start:crop_start+1080, :]
+                h = 1080
+                y_offset = 0
+            
             # Copy the frame to the center of the canvas
-            self.padded_buffer[y_offset:y_offset+h, x_offset:x_offset+w] = frame
+            padded_buffer[y_offset:y_offset+h, x_offset:x_offset+w] = frame
             
-            # Log the time taken for padding
-            #self.logger.log_operation_time('padded_view', time.time() - padded_start)
-            
-            return self.padded_buffer
+            return padded_buffer
             
         except Exception as e:
             self.logger.log_error(f"Error in _pad_to_1920x1080: {str(e)}")

@@ -80,9 +80,9 @@ class Constants:
         }
 
         # Frame Processing
-        self.CROP_LEFT = 165    # Pixels to crop from left
-        self.CROP_RIGHT = 176   # Pixels to crop from right
-        self.CROPPED_WIDTH = 1280 - self.CROP_LEFT - self.CROP_RIGHT  # = 939 pixels
+        self.CROP_LEFT = 0    # No cropping (was 165)
+        self.CROP_RIGHT = 0  # No cropping (was 176)
+        self.CROPPED_WIDTH = 1280  # Full width of 720p video
 
         # Video Processing
         self.MAX_CONSECUTIVE_ERRORS = 30
@@ -124,7 +124,7 @@ class Constants:
         self.MIN_DARK_REGION_SIZE = 100
 
         # Filtering Options
-        self.BORDER_MARGIN = 3  # How many pixels from space box border to consider "touching"
+        self.BORDER_MARGIN = 5  # How many pixels from space box border to consider "touching"
         self.MAX_VALID_DETECTIONS = 2  # Maximum number of valid detections per frame
         self.MAX_CONTOURS_PER_FRAME = 6  # Maximum number of contours to process per frame
 

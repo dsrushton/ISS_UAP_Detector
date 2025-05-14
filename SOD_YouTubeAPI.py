@@ -179,7 +179,7 @@ class YouTubeAPIManager:
         # Generate title with timestamp if not provided
         if not title:
             now = datetime.datetime.now()
-            title = f"ISS UAP Detector Stream {now.strftime('%Y-%m-%d %H:%M')}"
+            title = f"ISS_UAP_Detector Live Stream {now.strftime('%Y-%m-%d %H:%M')}"
             
         try:
             # Create a new broadcast

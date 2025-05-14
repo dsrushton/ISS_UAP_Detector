@@ -25,49 +25,18 @@ from SOD_Constants import (
 
 def gpu_crop_frame(frame: np.ndarray, left: int, right: int) -> np.ndarray:
     """
-    Crop a frame using GPU when CUDA is available, otherwise fallback to CPU.
+    Function kept for backward compatibility - returns the frame without cropping.
     
     Args:
         frame: Input frame (numpy array)
-        left: Number of pixels to crop from left
-        right: Number of pixels to crop from right
+        left: Ignored (kept for backward compatibility)
+        right: Ignored (kept for backward compatibility)
         
     Returns:
-        Cropped frame
+        Original frame without modifications
     """
-    # Check specifically for OpenCV CUDA support
-    has_opencv_cuda = False
-    try:
-        # Check if cv2.cuda.getCudaEnabledDeviceCount exists and returns at least 1
-        has_opencv_cuda = hasattr(cv2, 'cuda') and callable(getattr(cv2.cuda, 'getCudaEnabledDeviceCount', None)) and cv2.cuda.getCudaEnabledDeviceCount() > 0
-    except Exception:
-        # If any error occurs during check, assume no CUDA support
-        has_opencv_cuda = False
-    
-    # If no OpenCV CUDA support, fall back to CPU cropping
-    if not has_opencv_cuda:
-        return frame[:, left:-right]
-        
-    try:
-        # Create a GPU Mat from the numpy frame
-        gpu_frame = cv2.cuda_GpuMat()
-        gpu_frame.upload(frame)
-        
-        # Calculate the right boundary
-        width = frame.shape[1]
-        right_boundary = width - right
-        
-        # Use colRange to crop the frame horizontally (much faster than CPU cropping)
-        gpu_cropped = gpu_frame.colRange(left, right_boundary)
-        
-        # Download the result back to CPU
-        cropped_frame = gpu_cropped.download()
-        
-        return cropped_frame
-    except Exception as e:
-        # Don't print the error - we've already checked for CUDA support
-        # but there might be other CUDA-related errors we want to silently handle
-        return frame[:, left:-right]
+    # Just return the frame without any cropping
+    return frame
 
 @dataclass
 class DetectionResults:
@@ -201,6 +170,8 @@ class SpaceObjectDetector:
             use_cached_data = (
                 self.cached_space_contours is not None and 
                 self.cached_space_mask is not None and
+                hasattr(self, 'cached_analysis_mask') and 
+                self.cached_analysis_mask is not None and
                 self.last_border_update_frame > 0 and
                 self.frame_count - self.last_border_update_frame < self.rcnn_cycle
             )
@@ -208,7 +179,7 @@ class SpaceObjectDetector:
             if use_cached_data:
                 space_contours = self.cached_space_contours
                 space_mask = self.cached_space_mask
-                border_margin = self.cached_border_margin
+                analysis_mask = self.cached_analysis_mask  # Pre-shrunk mask for analysis
             else:
                 # Create a combined space mask for all space boxes if cached data not available
                 h, w = frame.shape[:2]
@@ -239,13 +210,27 @@ class SpaceObjectDetector:
                 space_mask = np.zeros((h, w), dtype=np.uint8)
                 cv2.drawContours(space_mask, space_contours, -1, 255, -1)
                 
-                # Use cached border margin from class attributes
-                border_margin = self.border_margin
+                # Create the analysis mask (with borders pre-shrunk)
+                analysis_mask = np.zeros((h, w), dtype=np.uint8)
+                margin = self.border_margin
+                
+                # For each contour in the space mask, create a shrunk version in the analysis mask
+                for contour in space_contours:
+                    # Create a temporary mask for this contour
+                    contour_mask = np.zeros((h, w), dtype=np.uint8)
+                    cv2.drawContours(contour_mask, [contour], 0, 255, -1)
+                    
+                    # Erode the contour mask by the border margin
+                    kernel = np.ones((margin*2+1, margin*2+1), np.uint8)
+                    eroded_mask = cv2.erode(contour_mask, kernel, iterations=1)
+                    
+                    # Add the eroded contour to the analysis mask
+                    analysis_mask = cv2.bitwise_or(analysis_mask, eroded_mask)
                 
                 # Cache the computed values for future frames
-                #self.cached_space_contours = space_contours
+                self.cached_space_contours = space_contours
                 self.cached_space_mask = space_mask
-                self.cached_border_margin = border_margin
+                self.cached_analysis_mask = analysis_mask
                 self.last_border_update_frame = self.frame_count
             
             # Store the space mask and contours in results
@@ -259,9 +244,9 @@ class SpaceObjectDetector:
             # Store the space box in results
             results.space_box = (x1, y1, x2, y2)
             
-            # Extract ROI for faster processing
+            # Extract ROI for faster processing - but use the analysis_mask for contour finding
             roi = frame[y1:y2, x1:x2]
-            roi_mask = space_mask[y1:y2, x1:x2]
+            roi_mask = analysis_mask[y1:y2, x1:x2]  # Use analysis_mask instead of space_mask
             
             if roi.size == 0 or roi_mask.size == 0:
                 return results
@@ -300,7 +285,7 @@ class SpaceObjectDetector:
             _, dark_mask_initial = cv2.threshold(roi_blurred, dark_threshold, 255, cv2.THRESH_BINARY_INV)
             kernel = np.ones((morph_size, morph_size), np.uint8)
             dark_mask_opened = cv2.morphologyEx(dark_mask_initial, cv2.MORPH_OPEN, kernel)
-            dark_mask_final = cv2.bitwise_and(dark_mask_opened, roi_mask) # Limit to original space region
+            dark_mask_final = cv2.bitwise_and(dark_mask_opened, roi_mask) # Limit to already border-shrunk region
 
             # 2. Create Precise Dark Region Mask from Contours
             dark_contours, _ = cv2.findContours(dark_mask_final, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -390,57 +375,7 @@ class SpaceObjectDetector:
                 if metrics['contrast'] < self.min_contrast:
                     continue
                 
-                # Only now check if the contour is too close to the border
-                # This is more expensive but we do it only for valid detections
-                too_close_to_border = False
-                
-                # Get bounding rect of this contour in global coordinates
-                # We already have x, y, w, h from above
-                cx_global = abs_x
-                cy_global = abs_y
-                
-                for space_contour in space_contours:
-                    # Get bounding rect of space contour
-                    sx, sy, sw, sh = cv2.boundingRect(space_contour)
-                    
-                    # Calculate minimum distance between boxes
-                    # If boxes are far apart, the contour can't be close to the border
-                    min_dist_x = max(0, max(cx_global - (sx + sw), sx - (cx_global + int(w * scale_back))))
-                    min_dist_y = max(0, max(cy_global - (sy + sh), sy - (cy_global + int(h * scale_back))))
-                    min_dist = math.sqrt(min_dist_x**2 + min_dist_y**2)
-                    
-                    # If minimum distance is greater than border margin, definitely not too close
-                    if min_dist > border_margin:
-                        continue
-                    
-                    # Use inset rectangle with border margin to check if contour is too close to border
-                    # Create inset space box by applying border_margin to all sides
-                    inset_x1 = sx + border_margin
-                    inset_y1 = sy + border_margin
-                    inset_x2 = (sx + sw) - border_margin
-                    inset_y2 = (sy + sh) - border_margin
-                    
-                    # OPTIMIZATION: Instead of expensive point-by-point check, we create an inset
-                    # rectangle shrunk by BORDER_MARGIN on all sides. Any contour that's not completely
-                    # inside this inset rectangle is considered too close to the border.
-                    # This is much faster than checking the distance of each contour point to the space border.
-                    
-                    # Skip if inset rectangle is invalid (too small)
-                    if inset_x1 >= inset_x2 or inset_y1 >= inset_y2:
-                        too_close_to_border = True
-                        break
-                    
-                    # Check if contour is entirely within the inset rectangle
-                    # If not, it's too close to the border
-                    scaled_w_int = int(w * scale_back)
-                    scaled_h_int = int(h * scale_back)
-                    if not (cx_global >= inset_x1 and (cx_global + scaled_w_int) <= inset_x2 and
-                            cy_global >= inset_y1 and (cy_global + scaled_h_int) <= inset_y2):
-                        too_close_to_border = True
-                        break
-                
-                if too_close_to_border:
-                    continue
+                # No need to check for border proximity - we already filtered with the pre-shrunk mask!
                 
                 # Only collect filter boxes if we have a potentially valid detection
                 filter_boxes = []
@@ -654,11 +589,7 @@ class SpaceObjectDetector:
             self.is_test_frame = is_test_frame
             results.metadata['test_frame'] = is_test_frame
             
-            # Get crop values if not provided
-            if crop_left is None:
-                crop_left = const.get_value('CROP_LEFT')
-            if crop_right is None:
-                crop_right = const.get_value('CROP_RIGHT')
+            # We'll use the frame as-is since it's already been resized in the main process
             
             # Run RCNN on regular cycle OR if this is a test frame
             if is_rcnn_frame or is_test_frame:
@@ -666,12 +597,8 @@ class SpaceObjectDetector:
                 try:
                     # Only send new frames if queue isn't full
                     if not self.rcnn_queue.full():
-                        if not is_test_frame:
-                            # For non-test frames, send the frame with crop parameters
-                            self.rcnn_queue.put_nowait((frame, crop_left, crop_right))
-                        else:
-                            # Test frames are already cropped
-                            self.rcnn_queue.put_nowait(frame)
+                        # For both test frames and regular frames, we're passing the frame as-is
+                        self.rcnn_queue.put_nowait(frame)
                         results.metadata['rcnn_frame'] = True
                     else:
                         results.metadata['rcnn_frame'] = False
@@ -696,14 +623,8 @@ class SpaceObjectDetector:
                 if self.cached_darkness_detected:
                     results.metadata['darkness_area_ratio'] = self.cached_darkness_area_ratio
             else:
-                # Update darkness detection state
-                if not is_test_frame:
-                    # Crop frame for darkness detection
-                    cropped_frame = gpu_crop_frame(frame, crop_left, crop_right)
-                    self._update_darkness_state(cropped_frame)
-                else:
-                    # Test frames are already cropped
-                    self._update_darkness_state(frame)
+                # Update darkness detection state using frame as-is
+                self._update_darkness_state(frame)
                 
                 # Use newly calculated values
                 results.darkness_detected = self.cached_darkness_detected
@@ -741,12 +662,8 @@ class SpaceObjectDetector:
                     space_boxes_changed = not self._are_space_boxes_same(space_boxes)
                     
                     if is_rcnn_frame or is_test_frame or space_boxes_changed:
-                        # Crop frame if needed
-                        if not is_test_frame:
-                            cropped_frame = gpu_crop_frame(frame, crop_left, crop_right)
-                            self._update_cached_border_data(cropped_frame, space_boxes)
-                        else:
-                            self._update_cached_border_data(frame, space_boxes)
+                        # Use frame as-is for border data updates
+                        self._update_cached_border_data(frame, space_boxes)
                         self.last_border_update_frame = self.frame_count
                     
                     # Track all anomalies and metrics
@@ -754,13 +671,8 @@ class SpaceObjectDetector:
                     all_metrics = []
                     
                     # Process the main combined space box using cached border data
-                    if not is_test_frame:
-                        # Crop frame for detect_anomalies
-                        cropped_frame = gpu_crop_frame(frame, crop_left, crop_right)
-                        box_results = self.detect_anomalies(cropped_frame, space_boxes, avoid_boxes)
-                    else:
-                        # Test frames are already cropped
-                        box_results = self.detect_anomalies(frame, space_boxes, avoid_boxes)
+                    # Use frame as-is for anomaly detection
+                    box_results = self.detect_anomalies(frame, space_boxes, avoid_boxes)
                     
                     # Store all results from the combined box
                     if box_results.anomalies:
@@ -789,13 +701,8 @@ class SpaceObjectDetector:
                             if (x2 < main_x1 or x1 > main_x2 or 
                                 y2 < main_y1 or y1 > main_y2):
                                 # Pass the space box as a list to avoid 'numpy.int32' object is not iterable error
-                                if not is_test_frame:
-                                    # Crop frame for detect_anomalies
-                                    cropped_frame = gpu_crop_frame(frame, crop_left, crop_right)
-                                    box_results = self.detect_anomalies(cropped_frame, [space_box], avoid_boxes)
-                                else:
-                                    # Test frames are already cropped
-                                    box_results = self.detect_anomalies(frame, [space_box], avoid_boxes)
+                                # Use frame as-is for anomaly detection
+                                box_results = self.detect_anomalies(frame, [space_box], avoid_boxes)
                                 
                                 if box_results.anomalies:
                                     all_anomalies.extend(box_results.anomalies)
@@ -940,13 +847,13 @@ class SpaceObjectDetector:
             # Check if cv2.cuda.getCudaEnabledDeviceCount exists and returns at least 1
             has_opencv_cuda = hasattr(cv2, 'cuda') and callable(getattr(cv2.cuda, 'getCudaEnabledDeviceCount', None)) and cv2.cuda.getCudaEnabledDeviceCount() > 0
             if has_opencv_cuda:
-                print("Using OpenCV CUDA for frame cropping")
+                print("Using OpenCV CUDA for frame processing")
             else:
-                print("OpenCV CUDA not available, using CPU cropping")
+                print("OpenCV CUDA not available, using CPU processing")
         except Exception:
             # If any error occurs during check, assume no CUDA support
             has_opencv_cuda = False
-            print("Error checking OpenCV CUDA support, using CPU cropping")
+            print("Error checking OpenCV CUDA support, using CPU processing")
         
         while self.rcnn_worker_running:
             try:
@@ -960,42 +867,23 @@ class SpaceObjectDetector:
                 
                 # Get the next frame from the queue
                 try:
-                    frame_data = self.rcnn_queue.get(timeout=1)
-                    if isinstance(frame_data, tuple) and len(frame_data) == 3:
-                        # If we receive a tuple, it contains (frame, left, right)
-                        frame, left, right = frame_data
+                    frame = self.rcnn_queue.get(timeout=1)
+                    if frame is None:
+                        break
                         
-                        # Use GPU cropping only if OpenCV CUDA is available
-                        if has_opencv_cuda:
-                            cropped_frame = gpu_crop_frame(frame, left, right)
-                            predictions = self._run_rcnn_detection(cropped_frame)
-                        else:
-                            # Fall back to CPU cropping
-                            cropped_frame = frame[:, left:-right]
-                            predictions = self._run_rcnn_detection(cropped_frame)
-                    else:
-                        # Backward compatibility - just a frame with no crop info
-                        frame = frame_data
-                        predictions = self._run_rcnn_detection(frame)
+                    # Process the frame directly without cropping
+                    predictions = self._run_rcnn_detection(frame)
                 except queue.Empty:
                     continue
                 
-                if frame_data is None:
-                    break
-
                 # Store results
                 self.last_rcnn_results = predictions
                 self.last_rcnn_frame = self.frame_count
                 self.rcnn_queue.task_done()
                 
                 # Update darkness detection state when RCNN results are refreshed
-                # Only do this in the worker thread to avoid blocking the main thread
-                if isinstance(frame_data, tuple) and len(frame_data) == 3:
-                    # Use the cropped frame for darkness detection
-                    self._update_darkness_state(cropped_frame)
-                else:
-                    # Use the original frame
-                    self._update_darkness_state(frame)
+                # Use the frame as-is for darkness detection
+                self._update_darkness_state(frame)
                 
                 # We're keeping everything on GPU, so don't explicitly clean up
                 # Just delete Python references to allow garbage collection when needed
@@ -1052,69 +940,61 @@ class SpaceObjectDetector:
         
         # Cache border margin since it's needed for border filtering
         self.cached_border_margin = self.border_margin
+        margin = self.border_margin
         
         # Create a fresh space mask - this is needed for creating space contours
         h, w = frame.shape[:2]
-        space_mask = np.zeros((h, w), dtype=np.uint8)
+        display_mask = np.zeros((h, w), dtype=np.uint8)
         
-        # Draw all space boxes on the mask - keeping original boxes
+        # Draw all space boxes on the mask - keeping original boxes for display
         for box in space_boxes:
             x1, y1, x2, y2 = map(int, box)
-            cv2.rectangle(space_mask, (x1, y1), (x2, y2), 255, -1)
+            cv2.rectangle(display_mask, (x1, y1), (x2, y2), 255, -1)
         
-        # Find external contours directly - this properly excludes internal borders
-        external_contours, _ = cv2.findContours(space_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Find external contours - this properly excludes internal borders for combined boxes
+        display_contours, _ = cv2.findContours(display_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Clear mask and redraw only the external contours
-        space_mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.drawContours(space_mask, external_contours, -1, 255, -1)
+        # Create the analysis mask (with borders pre-shrunk)
+        analysis_mask = np.zeros((h, w), dtype=np.uint8)
         
-        # Store the space mask and contours for reuse
-        self.cached_space_mask = space_mask
-        self.cached_space_contours = external_contours
-
+        # For each contour in the display mask, create a shrunk version in the analysis mask
+        for contour in display_contours:
+            # Get the bounding rect of this contour
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            # Create a temporary mask for this contour
+            contour_mask = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
+            cv2.drawContours(contour_mask, [contour], 0, 255, -1)
+            
+            # Erode the contour mask by the border margin
+            kernel = np.ones((margin*2+1, margin*2+1), np.uint8)
+            eroded_mask = cv2.erode(contour_mask, kernel, iterations=1)
+            
+            # Add the eroded contour to the analysis mask
+            analysis_mask = cv2.bitwise_or(analysis_mask, eroded_mask)
+        
+        # Store both masks and contours
+        self.cached_space_mask = display_mask  # Original mask for display
+        self.cached_space_contours = display_contours  # Original contours for display
+        self.cached_analysis_mask = analysis_mask  # Pre-shrunk mask for analysis
+        
     def crop_and_prepare_for_rcnn(self, frame: np.ndarray, left: int, right: int) -> torch.Tensor:
         """
-        Crop frame on GPU and prepare it for RCNN processing.
+        Prepare frame for RCNN processing without cropping.
         
         Args:
             frame: Input frame
-            left: Pixels to crop from left
-            right: Pixels to crop from right
+            left: Ignored (kept for backward compatibility)
+            right: Ignored (kept for backward compatibility)
             
         Returns:
             PyTorch tensor ready for RCNN inference
         """
-        # Check specifically for OpenCV CUDA support
-        has_opencv_cuda = False
-        try:
-            # Check if cv2.cuda.getCudaEnabledDeviceCount exists and returns at least 1
-            has_opencv_cuda = hasattr(cv2, 'cuda') and callable(getattr(cv2.cuda, 'getCudaEnabledDeviceCount', None)) and cv2.cuda.getCudaEnabledDeviceCount() > 0
-        except Exception:
-            # If any error occurs during check, assume no CUDA support
-            has_opencv_cuda = False
-        
-        # Fallback to CPU processing if no OpenCV CUDA support
-        if not has_opencv_cuda:
-            cropped = frame[:, left:-right]
-            img_tensor = torch.from_numpy(cropped).permute(2, 0, 1).float() / 255.0
-            img_tensor = self.transform(img_tensor).unsqueeze(0).to(DEVICE)
-            return img_tensor
-        
-        try:
-            # Crop on GPU
-            cropped = gpu_crop_frame(frame, left, right)
-            
-            # Convert to tensor and prepare for RCNN
-            img_tensor = torch.from_numpy(cropped).permute(2, 0, 1).float() / 255.0
-            img_tensor = self.transform(img_tensor).unsqueeze(0).to(DEVICE)
-            return img_tensor
-        except Exception:
-            # Silently fall back to CPU processing without error messages
-            cropped = frame[:, left:-right]
-            img_tensor = torch.from_numpy(cropped).permute(2, 0, 1).float() / 255.0
-            img_tensor = self.transform(img_tensor).unsqueeze(0).to(DEVICE)
-            return img_tensor
+        # No cropping - use the full frame
+        # Just convert to tensor and prepare for RCNN
+        img_tensor = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
+        img_tensor = self.transform(img_tensor).unsqueeze(0).to(DEVICE)
+        return img_tensor
 
 class FastRCNNPredictor(torch.nn.Module):
     """Simple FastRCNN prediction head."""

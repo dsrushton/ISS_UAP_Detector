@@ -470,21 +470,29 @@ class SpaceObjectDetectionSystem:
                             self.inject_test_frames = self.frame_display_start
                             print(f"\nMoving to test frame {self.current_test_image + 1}/{len(self.test_images)}")
             
-            # Get crop values if not provided
-            if crop_left is None:
-                crop_left = const.get_value('CROP_LEFT')
-            if crop_right is None:
-                crop_right = const.get_value('CROP_RIGHT')
-            
-            # Use test frame as-is since it's already cropped, otherwise we'll use GPU cropping in detector
+            # Use the full frame for both display and detection
             if self.current_frame_is_test:
-                # Test frames are already cropped, so skip crop_left/crop_right parameters
+                # Test frames may need resizing to match expected dimensions
+                h, w = frame.shape[:2]
+                if log_this_frame:
+                    print(f"Original test frame dimensions: {w}x{h}")
+                
+                if w != const.get_value('CROPPED_WIDTH'):
+                    aspect_ratio = h / w
+                    new_width = const.get_value('CROPPED_WIDTH')
+                    new_height = int(new_width * aspect_ratio)
+                    frame = cv2.resize(frame, (new_width, new_height))
+                    if log_this_frame:
+                        print(f"Resized test frame to {new_width}x{new_height}")
                 detections_frame = frame
-                run_detection = True
+                display_frame = frame
             else:
-                # For regular frames, we'll let the detector handle GPU cropping
+                # Use the raw input frame without any cropping
+                h, w = frame.shape[:2]
+                if log_this_frame:
+                    print(f"Using full frame dimensions: {w}x{h}")
                 detections_frame = frame
-                run_detection = True
+                display_frame = frame
             
             # Check if we have avoid boxes from the display manager
             if avoid_boxes is None and self.display:
@@ -493,18 +501,17 @@ class SpaceObjectDetectionSystem:
             # Run detection
             detection_start = time.time()
             
-            if run_detection:
-                # Pass the frame uncropped with crop parameters - detector will handle GPU cropping
-                detections = self.detector.process_frame(
-                    detections_frame, 
-                    avoid_boxes, 
-                    is_test_frame=self.current_frame_is_test,
-                    crop_left=None if self.current_frame_is_test else crop_left,
-                    crop_right=None if self.current_frame_is_test else crop_right
-                )
-            else:
-                self.logger.log_error("Detection skipped")
-                return True
+            # Confirm the detections_frame has the expected width
+            if log_this_frame:
+                print(f"Detection frame dimensions: {detections_frame.shape}")
+            
+            detections = self.detector.process_frame(
+                detections_frame, 
+                avoid_boxes, 
+                is_test_frame=self.current_frame_is_test,
+                crop_left=None,  # No cropping
+                crop_right=None  # No cropping
+            )
             
             detection_time = time.time() - detection_start
             
@@ -522,9 +529,6 @@ class SpaceObjectDetectionSystem:
                     self.logger.log_operation_time('total_iteration', time.time() - iteration_start)
                     self.logger.end_frame()
                 return True
-            
-            # Get the cropped frame for display and UI operations
-            display_frame = frame if self.current_frame_is_test else frame[:, crop_left:-crop_right]
             
             # Update display
             display_start = time.time()
@@ -575,7 +579,7 @@ class SpaceObjectDetectionSystem:
             
             # Start recording if detection found and not already recording
             if has_detection and self.video and not self.video.recording:
-                # Use fixed dimensions since both frames are 939x720
+                # Use the dimensions of the combined frame
                 frame_size = (combined_frame.shape[1], combined_frame.shape[0])
                 if self.video.start_recording(frame_size):
                     print(f"\nStarted recording: {self.video.current_video_number:05d}.avi")
@@ -588,10 +592,7 @@ class SpaceObjectDetectionSystem:
             # are saved with incremented suffixes (-a, -b, -c, etc.)
             elif has_detection and self.video and self.video.recording and self.capture:
                 # Only process if we're within the POST_DETECTION_SECONDS window
-                # but after the SAVE_s     fv
-                # 
-                # 
-                # VAL to avoid saving frames too frequently
+                # but after the SAVE_INTERVAL to avoid saving frames too frequently
                 current_time = time.time()
                 if (self.video.frames_since_detection / self.fps < POST_DETECTION_SECONDS and 
                     current_time - self.capture.last_save_time >= SAVE_INTERVAL):
@@ -639,7 +640,7 @@ class SpaceObjectDetectionSystem:
             # Handle burst capture
             if hasattr(self, 'burst_remaining') and self.burst_remaining > 0:
                 if self.capture:
-                    # For burst capture, use the cropped frame
+                    # For burst capture, use the full frame
                     self.capture.save_raw_frame(display_frame)
                 self.burst_remaining -= 1
             
@@ -691,6 +692,8 @@ class SpaceObjectDetectionSystem:
     def _attempt_connection(self, source: str, is_youtube: bool = False) -> bool:
         """Attempt to establish a connection to the video source."""
         try:
+            original_url = source  # Store the original URL for timestamp extraction
+            
             if is_youtube:
                 print("\nAttempting to get fresh stream URL...")
                 stream_url = get_best_stream_url(source)
@@ -720,6 +723,49 @@ class SpaceObjectDetectionSystem:
             if not self.cap.isOpened():
                 print("Failed to open video capture")
                 return False
+                
+            # Extract timestamp from original URL if this is a YouTube video
+            start_position_ms = 0
+            if is_youtube:
+                import re
+                # Look for timestamp in different formats
+                timestamp_match = re.search(r'[?&]t=(\d+)s?', original_url)
+                if timestamp_match:
+                    start_position_ms = int(timestamp_match.group(1)) * 1000
+                    print(f"Extracted timestamp: {start_position_ms/1000:.1f} seconds from URL: {original_url}")
+                else:
+                    # Try more complex timestamp format (1h2m3s)
+                    complex_match = re.search(r'[?&]t=(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?', original_url)
+                    if complex_match and any(complex_match.groups()):
+                        hours = int(complex_match.group(1) or 0)
+                        minutes = int(complex_match.group(2) or 0)
+                        seconds = int(complex_match.group(3) or 0)
+                        start_position_ms = (hours * 3600 + minutes * 60 + seconds) * 1000
+                        print(f"Extracted complex timestamp: {start_position_ms/1000:.1f} seconds ({hours}h {minutes}m {seconds}s) from URL: {original_url}")
+                
+            # If we have a timestamp, set the video position
+            if start_position_ms > 0:
+                print(f"Setting video position to {start_position_ms/1000:.1f} seconds")
+                
+                # First read a frame to ensure the video is properly initialized
+                ret, _ = self.cap.read()
+                if not ret:
+                    print("Failed to read initial frame before seeking")
+                    
+                # Set the position - sometimes we need to use milliseconds, sometimes frames
+                self.cap.set(cv2.CAP_PROP_POS_MSEC, start_position_ms)
+                
+                # Alternative approach: try setting position by frame number
+                fps = self.cap.get(cv2.CAP_PROP_FPS)
+                if fps > 0:
+                    frame_pos = int(start_position_ms / 1000 * fps)
+                    print(f"Also trying to set position by frame number: {frame_pos}")
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
+                
+                # Get the actual position to verify if seeking worked
+                actual_pos_ms = self.cap.get(cv2.CAP_PROP_POS_MSEC)
+                actual_pos_frames = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+                print(f"Actual position after seek: {actual_pos_ms/1000:.1f} seconds, frame {actual_pos_frames}")
                 
             # Get actual frame rate from capture
             fps = self.cap.get(cv2.CAP_PROP_FPS)
@@ -776,10 +822,18 @@ class SpaceObjectDetectionSystem:
         self.is_running = True
         
         # Get the frame rate for timing calculations and video manager
-        fps = self.cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 0 or fps > 120:  # Sanity check
-            fps = 60.0  # Default to 60 fps if invalid
-            print("Could not detect valid FPS from source, defaulting to 60 FPS")
+        source_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        if source_fps <= 0 or source_fps > 120:  # Sanity check
+            source_fps = 30.0  # Default to 30 fps if invalid
+            print(f"Could not detect valid FPS from source, defaulting to {source_fps} FPS")
+        
+        # Use a fixed 60 FPS playback rate regardless of source
+        fps = 60.0
+        print(f"Source video is {source_fps} FPS, forcing playback at {fps} FPS")
+            
+        # Calculate the target time per frame for rate control
+        target_frame_time = 1.0 / fps
+        print(f"Target frame time: {target_frame_time*1000:.2f} ms (for {fps:.2f} FPS)")
             
         # Update the system FPS
         self.fps = fps
@@ -791,9 +845,7 @@ class SpaceObjectDetectionSystem:
         # Set the expected FPS in the logger for rate calculations
         self.logger.set_expected_fps(fps)
         
-        # Pre-compute crop values
-        import SOD_Constants as const
-        crop_left, crop_right = const.get_value('CROP_LEFT'), const.get_value('CROP_RIGHT')
+        # No need to pre-compute crop values since we're resizing instead
         
         # Variables for metrics tracking
         frame_count = 0
@@ -807,6 +859,7 @@ class SpaceObjectDetectionSystem:
         
         # Main processing loop
         consecutive_errors = 0
+        last_frame_time = time.time()
         try:
             while self.is_running:
                 # Start timing the main loop cycle
@@ -830,6 +883,12 @@ class SpaceObjectDetectionSystem:
                 frames_since_log = (frames_since_log + 1) % self.log_interval
                 log_this_frame = frames_since_log == 0
                 
+                # Print frame dimensions and aspect ratio for debugging YouTube issues
+                if ret and log_this_frame:
+                    h, w = frame.shape[:2]
+                    aspect_ratio = h / w
+                    print(f"YouTube frame dimensions: {w}x{h}, aspect ratio: {aspect_ratio:.3f}")
+                
                 # Only log periodically to reduce lock contention
                 if log_this_frame and frame_read_times:
                     avg_read_time = sum(frame_read_times) / len(frame_read_times)
@@ -851,14 +910,14 @@ class SpaceObjectDetectionSystem:
                         consecutive_errors = 0
                         
                     # Short delay before retry
-                    #time.sleep(0.1)
+                    time.sleep(0.1)
                     continue
                 else:
                     # Reset error counter
                     consecutive_errors = 0
                     
-                    # Process frame with pre-computed crop values
-                    process_result = self.process_frame(frame, self.display.avoid_boxes, crop_left, crop_right)
+                    # Process frame without cropping
+                    process_result = self.process_frame(frame, self.display.avoid_boxes)
                     
                     # Check if we should quit
                     if process_result is None:
@@ -884,7 +943,19 @@ class SpaceObjectDetectionSystem:
                     self.logger.log_operation_time('main_loop_cycle', avg_loop_time)
                     main_loop_times = []
                 
-                # Key handling is now done in process_frame
+                # Control frame rate to match target fps
+                current_time = time.time()
+                elapsed = current_time - last_frame_time
+                sleep_time = max(0, target_frame_time - elapsed)
+                
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                    if log_this_frame:
+                        # Every 30 frames, print the actual FPS achieved
+                        actual_fps = 1.0 / (time.time() - last_frame_time)
+                        print(f"Current playback speed: {actual_fps:.2f} FPS (target: {fps:.2f})")
+                
+                last_frame_time = time.time()
                 
         except Exception as e:
             print(f"Error processing video stream: {str(e)}")
@@ -1024,13 +1095,18 @@ class SpaceObjectDetectionSystem:
             else:
                 print("YouTube API integration: Not available")
         
-        # Pre-compute crop values
-        import SOD_Constants as const
-        crop_left, crop_right = const.get_value('CROP_LEFT'), const.get_value('CROP_RIGHT')
+        # Use a fixed 60 FPS playback rate
+        fps = 60.0
+        print(f"Forcing playback at {fps} FPS")
+        
+        # Calculate the target time per frame for rate control
+        target_frame_time = 1.0 / fps
+        print(f"Target frame time: {target_frame_time*1000:.2f} ms (for {fps:.2f} FPS)")
         
         # Track main loop times for batched logging
         main_loop_times = []
         frames_since_log = 0
+        last_frame_time = time.time()
         
         # Main processing loop
         while True:
@@ -1044,8 +1120,8 @@ class SpaceObjectDetectionSystem:
                 time.sleep(0.1)
                 continue
                 
-            # Process the frame with pre-computed crop values
-            process_result = self.process_frame(frame, crop_left=crop_left, crop_right=crop_right)
+            # Process the frame without cropping
+            process_result = self.process_frame(frame)
             
             # Check the result
             if process_result is None:
@@ -1058,7 +1134,7 @@ class SpaceObjectDetectionSystem:
                 print("Quit requested")
                 break
             
-            # Key handling is now done in process_frame, no need for additional waitKey here
+            # Key handling is now done in process_frame
             
             # Record the main loop cycle time
             main_loop_time = time.time() - main_loop_start
@@ -1073,6 +1149,20 @@ class SpaceObjectDetectionSystem:
                 avg_loop_time = sum(main_loop_times) / len(main_loop_times)
                 self.logger.log_operation_time('main_loop_cycle', avg_loop_time)
                 main_loop_times = []
+                
+            # Control frame rate to match target fps
+            current_time = time.time()
+            elapsed = current_time - last_frame_time
+            sleep_time = max(0, target_frame_time - elapsed)
+            
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+                if log_this_frame:
+                    # Every 30 frames, print the actual FPS achieved
+                    actual_fps = 1.0 / (time.time() - last_frame_time)
+                    print(f"Current playback speed: {actual_fps:.2f} FPS (target: {fps:.2f})")
+            
+            last_frame_time = time.time()
 
     def load_test_images(self) -> bool:
         """Load all test images from the Test_Image_Collection directory."""
@@ -1092,10 +1182,15 @@ class SpaceObjectDetectionSystem:
                 img_path = os.path.join(test_dir, filename)
                 img = cv2.imread(img_path)
                 if img is not None:
-                    # Get rightmost 939x720 pixels
+                    # Keep the full image, just resize to 720p height if needed
                     h, w = img.shape[:2]
-                    x1 = max(0, w - 939)  # Start x coordinate for cropping
-                    img = img[:720, x1:]  # Crop to 939x720 from the right
+                    if h != 720:
+                        aspect_ratio = w / h
+                        target_height = 720
+                        target_width = int(target_height * aspect_ratio)
+                        img = cv2.resize(img, (target_width, target_height))
+                        print(f"Resized test image to {target_width}x{target_height}")
+                    
                     self.test_images.append(img)
                     print(f"Loaded test image: {img_path}")
                 else:
@@ -1149,10 +1244,10 @@ def main():
         print("Saving both video (.avi) and images (.jpg) for each detection")
         print("Videos include 3s pre-detection buffer")
         
-        # YouTube ISS live stream URL
-        youtube_url = 'https://www.youtube.com/watch?v=jKHvbJe9c_Y'
+        # YouTube video URL
+        youtube_url = 'https://www.youtube.com/watch?v=xP9LyPsqI_g&t=10069s'
         
-        print("\nConnecting to ISS live feed...")
+        print("\nConnecting to specified YouTube video...")
         sod.process_video_stream(youtube_url, is_youtube=True)
             
     except Exception as e:
