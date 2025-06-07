@@ -69,7 +69,7 @@ class Constants:
 
         # Detection Thresholds
         self.CLASS_THRESHOLDS = {
-            'space': 0.98,
+            'space': 0.80,
             'earth': 0.75,
             'iss': 0.75,
             'lf': 0.99,

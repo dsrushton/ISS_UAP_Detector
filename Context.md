@@ -241,3 +241,6 @@ Recent Additions:
 3. Improved debug view persistence
 4. Optimized video recording system
 5. Better memory management
+
+
+By tracking overlap of bounding boxes/detections, could build a better detector. 

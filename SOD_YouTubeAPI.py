@@ -7,7 +7,7 @@ import os
 import time
 import datetime
 import json
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 # Try to import the Google API client
 try:
@@ -156,6 +156,83 @@ class YouTubeAPIManager:
                 return False
                 
         return False
+    
+    def list_upcoming_broadcasts(self) -> List[Dict[str, Any]]:
+        """
+        List all upcoming broadcasts.
+        
+        Returns:
+            List of broadcast data dictionaries
+        """
+        if not self.authorized or not self.api:
+            print("YouTube API not authorized")
+            return []
+            
+        try:
+            # Get all scheduled broadcasts
+            request = self.api.liveBroadcasts().list(
+                part="id,snippet,status",
+                broadcastStatus="upcoming",
+                maxResults=50
+            )
+            response = request.execute()
+            
+            if 'items' in response:
+                return response['items']
+            return []
+            
+        except Exception as e:
+            print(f"Error listing broadcasts: {str(e)}")
+            return []
+            
+    def clean_up_broadcasts(self) -> int:
+        """
+        Delete or transition all existing upcoming broadcasts.
+        
+        Returns:
+            int: Number of broadcasts cleaned up
+        """
+        cleaned_count = 0
+        
+        try:
+            # Get all upcoming broadcasts
+            broadcasts = self.list_upcoming_broadcasts()
+            print(f"Found {len(broadcasts)} upcoming broadcasts to clean up")
+            
+            # For each broadcast, delete or transition to completed
+            for broadcast in broadcasts:
+                broadcast_id = broadcast['id']
+                title = broadcast['snippet']['title']
+                
+                try:
+                    # Delete the broadcast
+                    request = self.api.liveBroadcasts().delete(
+                        id=broadcast_id
+                    )
+                    request.execute()
+                    print(f"Deleted broadcast: {title} (ID: {broadcast_id})")
+                    cleaned_count += 1
+                except Exception as e:
+                    print(f"Error deleting broadcast {broadcast_id}: {str(e)}")
+                    
+                    # If deletion fails, try to transition to complete
+                    try:
+                        request = self.api.liveBroadcasts().transition(
+                            broadcastStatus="complete",
+                            id=broadcast_id,
+                            part="id,status"
+                        )
+                        request.execute()
+                        print(f"Transitioned broadcast to complete: {title} (ID: {broadcast_id})")
+                        cleaned_count += 1
+                    except Exception as inner_e:
+                        print(f"Error transitioning broadcast {broadcast_id}: {str(inner_e)}")
+                    
+            return cleaned_count
+                
+        except Exception as e:
+            print(f"Error cleaning up broadcasts: {str(e)}")
+            return cleaned_count
         
     def create_broadcast(self, title: Optional[str] = None, privacy: str = "public") -> Optional[str]:
         """
@@ -175,21 +252,25 @@ class YouTubeAPIManager:
         if not self.stream_id:
             print("No stream ID available. Call load_or_create_stream() first.")
             return None
+        
+        # Clean up any existing broadcasts before creating a new one
+        self.clean_up_broadcasts()
             
         # Generate title with timestamp if not provided
         if not title:
             now = datetime.datetime.now()
-            title = f"ISS UAP Detector Stream {now.strftime('%Y-%m-%d %H:%M')}"
+            title = f"ISS UAP Detector Live Stream {now.strftime('%Y-%m-%d %H:%M')}"
             
         try:
-            # Create a new broadcast
+            # Create a new broadcast - set scheduledStartTime to now + RESTART_DELAY_SECONDS
             now = datetime.datetime.utcnow()
+            start_time = now + datetime.timedelta(seconds=120)  # Add 120 seconds for the restart delay
             broadcast_request = self.api.liveBroadcasts().insert(
                 part="snippet,status,contentDetails",
                 body={
                     "snippet": {
                         "title": title,
-                        "scheduledStartTime": (now + datetime.timedelta(minutes=1)).isoformat("T") + "Z"
+                        "scheduledStartTime": start_time.isoformat("T") + "Z"  # Set to now + delay
                     },
                     "status": {
                         "privacyStatus": privacy
@@ -215,6 +296,7 @@ class YouTubeAPIManager:
             
             self.current_broadcast_id = broadcast_id
             print(f"Created and bound new broadcast: {title} (ID: {broadcast_id})")
+            print(f"Broadcast scheduled to start in 120 seconds")
             return broadcast_id
             
         except Exception as e:
@@ -256,5 +338,7 @@ class YouTubeAPIManager:
         Returns:
             Tuple[bool, Optional[str]]: (Success flag, New broadcast ID if successful)
         """
+        # Clean up existing broadcasts then create a new one
+        self.clean_up_broadcasts()
         new_broadcast_id = self.create_broadcast()
         return (new_broadcast_id is not None, new_broadcast_id) 

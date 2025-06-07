@@ -639,7 +639,7 @@ class SpaceObjectDetectionSystem:
             # Handle burst capture
             if hasattr(self, 'burst_remaining') and self.burst_remaining > 0:
                 if self.capture:
-                    # For burst capture, use the cropped frame
+                    # For burst capture, use the full frame
                     self.capture.save_raw_frame(display_frame)
                 self.burst_remaining -= 1
             
@@ -1150,7 +1150,7 @@ def main():
         print("Videos include 3s pre-detection buffer")
         
         # YouTube ISS live stream URL
-        youtube_url = 'https://www.youtube.com/watch?v=jKHvbJe9c_Y'
+        youtube_url = 'https://www.youtube.com/watch?v=DIgkvm2nmHc'
         
         print("\nConnecting to ISS live feed...")
         sod.process_video_stream(youtube_url, is_youtube=True)

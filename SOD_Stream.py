@@ -14,10 +14,10 @@ import signal
 from typing import Optional
 
 # Import YouTube API Manager for broadcast rotation
-try:
-    from SOD_YouTubeAPI import YouTubeAPIManager, GOOGLE_API_AVAILABLE
-except ImportError:
-    GOOGLE_API_AVAILABLE = False
+from SOD_YouTubeAPI import YouTubeAPIManager, GOOGLE_API_AVAILABLE
+
+if not GOOGLE_API_AVAILABLE:
+    raise ImportError("Required YouTube API packages not installed. Please run: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib")
 
 # Constants
 DEFAULT_RTMP_URL = "rtmp://a.rtmp.youtube.com/live2"
@@ -34,7 +34,7 @@ except ImportError:
     # Default values if config doesn't exist
     ENABLE_STREAM_CYCLING = True
     STREAM_CYCLE_SECONDS = 11 * 3600 + 55 * 60  # 11h 55m in seconds
-    RESTART_DELAY_SECONDS = 20  # Seconds to wait after stopping before restarting
+    RESTART_DELAY_SECONDS = 120  # Seconds to wait after stopping before restarting
     CYCLING_CONFIG_LOADED = False
 
 class StreamManager:
@@ -71,25 +71,22 @@ class StreamManager:
         self.stream_cycle_timer = None
         self.cycle_count = 0
         
-        # Initialize YouTube API Manager for broadcast rotation if available
-        self.youtube_api = None
-        if GOOGLE_API_AVAILABLE:
-            try:
-                self.youtube_api = YouTubeAPIManager()
-                if self.youtube_api.authorized:
-                    # If API is available and authorized, try to load or create a stream
-                    if self.youtube_api.load_or_create_stream():
-                        # Try to get the stream key
-                        api_stream_key = self.youtube_api.get_stream_key()
-                        if api_stream_key:
-                            self.stream_key = api_stream_key
-                            print(f"Using stream key from YouTube API: {self.stream_key[:4]}...")
-                    
-                    # Create initial broadcast
-                    self.youtube_api.create_broadcast()
-            except Exception as e:
-                print(f"Error initializing YouTube API: {str(e)}")
-                self.youtube_api = None
+        # Initialize YouTube API Manager
+        self.youtube_api = YouTubeAPIManager()
+        if not self.youtube_api.authorized:
+            raise RuntimeError("Failed to initialize YouTube API. Please ensure you have set up the API credentials correctly.")
+            
+        # Load or create stream
+        if not self.youtube_api.load_or_create_stream():
+            raise RuntimeError("Failed to load or create YouTube stream. Please check your API credentials and permissions.")
+            
+        # Get stream key
+        api_stream_key = self.youtube_api.get_stream_key()
+        if not api_stream_key:
+            raise RuntimeError("Failed to get stream key from YouTube API. Please check your API credentials and permissions.")
+            
+        self.stream_key = api_stream_key
+        print(f"Using stream key from YouTube API: {self.stream_key[:4]}...")
         
         print(f"StreamManager initialized with frame size: {frame_width}x{frame_height}, target FPS: {self.target_fps}")
         if self.auto_restart:
@@ -99,10 +96,7 @@ class StreamManager:
         else:
             print("Auto-restart streaming: Disabled")
             
-        if self.youtube_api and self.youtube_api.authorized:
-            print("YouTube API integration: Active (broadcasts will be properly rotated)")
-        else:
-            print("YouTube API integration: Not available (basic stream cycling only)")
+        print("YouTube API integration: Active (broadcasts will be properly rotated)")
     
     def set_software_encoding(self, use_software: bool) -> None:
         """Set whether to use software encoding instead of hardware encoding."""
@@ -124,7 +118,7 @@ class StreamManager:
             
         # Create a new timer for STREAM_CYCLE_SECONDS
         self.stream_cycle_timer = threading.Timer(STREAM_CYCLE_SECONDS, self._cycle_stream)
-        self.stream_cycle_timer.daemon = True
+        self.stream_cycle_timer.daemon = False  # Make it non-daemon so it survives main thread exit
         self.stream_cycle_timer.start()
         
         # Calculate the cycle end time
@@ -132,39 +126,86 @@ class StreamManager:
                                        time.localtime(time.time() + STREAM_CYCLE_SECONDS))
         
         print(f"Stream cycle timer started. Stream will restart at {cycle_end_time}")
+        
+        # Add periodic status check
+        def check_timer_status():
+            try:
+                while self.is_streaming and self.stream_cycle_timer and self.stream_cycle_timer.is_alive():
+                    time.sleep(300)  # Check every 5 minutes
+                    if self.stream_cycle_timer and self.stream_cycle_timer.is_alive():
+                        remaining = self.stream_cycle_timer.interval - (time.time() - self.stream_start_time)
+                        hours = int(remaining // 3600)
+                        minutes = int((remaining % 3600) // 60)
+                        print(f"Stream cycle timer active - {hours}h {minutes}m remaining until restart")
+                    else:
+                        # Timer died unexpectedly, restart it
+                        print("Stream cycle timer died unexpectedly, restarting...")
+                        self._start_cycle_timer()
+                        break
+            except Exception as e:
+                print(f"Error in timer status check: {str(e)}")
+                # Try to restart the timer
+                self._start_cycle_timer()
+        
+        # Start the status check thread
+        status_thread = threading.Thread(target=check_timer_status)
+        status_thread.daemon = False  # Make it non-daemon
+        status_thread.start()
     
     def _cycle_stream(self) -> None:
         """Stop and restart the stream to work around YouTube's duration limits."""
         if not self.is_streaming:
+            print("Stream cycling skipped - stream not active")
             return
             
         self.cycle_count += 1
         print(f"\n*** CYCLING STREAM #{self.cycle_count} (duration limit reached) ***")
         
-        # Save the current frames queue and stream key for restart
-        current_frames_queue = self.frames_queue
-        current_stream_key = self.stream_key
-        
-        # If using YouTube API, create a new broadcast before stopping the stream
-        if self.youtube_api and self.youtube_api.authorized:
-            print("Creating new YouTube broadcast for rotation...")
-            success, broadcast_id = self.youtube_api.rotate_broadcast()
-            if success:
-                print(f"New broadcast created and bound to stream (ID: {broadcast_id})")
-            else:
-                print("Failed to create new broadcast, but will continue with stream restart")
-        
-        # Stop the stream gracefully (sending SIGINT to FFmpeg for clean shutdown)
-        self._graceful_stop_streaming()
-        
-        # Wait briefly to ensure YouTube registers the end of the stream
-        print(f"Waiting {RESTART_DELAY_SECONDS} seconds before restarting stream...")
-        time.sleep(RESTART_DELAY_SECONDS)
-        
-        # Restart the stream with the same settings
-        print("Restarting stream with the same settings...")
-        self.stream_key = current_stream_key
-        self.start_streaming(current_frames_queue)
+        try:
+            # Save the current frames queue for restart
+            current_frames_queue = self.frames_queue
+            
+            # If using YouTube API, create a new broadcast before stopping the stream
+            if self.youtube_api and self.youtube_api.authorized:
+                print("Creating new broadcast for the upcoming stream...")
+                success, broadcast_id = self.youtube_api.rotate_broadcast()
+                if success:
+                    print(f"New broadcast created and bound to stream (ID: {broadcast_id})")
+                    # Get the new stream key for the upcoming broadcast
+                    new_stream_key = self.youtube_api.get_stream_key()
+                    if new_stream_key:
+                        print("Got new stream key for upcoming broadcast")
+                        self.stream_key = new_stream_key
+                    else:
+                        print("Failed to get new stream key - will use existing key")
+                else:
+                    print("Failed to create new broadcast - will continue with existing stream")
+                    return
+            
+            # Stop the current stream gracefully
+            print("Stopping current stream...")
+            if not self._graceful_stop_streaming():
+                print("Failed to stop stream gracefully, attempting forced stop")
+                self.is_streaming = False
+                if self.ffmpeg_process:
+                    self.ffmpeg_process.kill()
+            
+            # Wait for the old stream to fully end
+            print(f"Waiting {RESTART_DELAY_SECONDS} seconds for old stream to end...")
+            time.sleep(RESTART_DELAY_SECONDS)
+            
+            # Start the new stream with the new broadcast
+            print("Starting new stream with new broadcast...")
+            if not self.start_streaming(current_frames_queue):
+                print("Failed to start new stream - please check logs and restart manually")
+                return
+                
+            print("Stream successfully cycled to new broadcast")
+            
+        except Exception as e:
+            print(f"Error during stream cycling: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def _graceful_stop_streaming(self) -> bool:
         """Stop the active stream by sending SIGINT to FFmpeg for clean shutdown."""
@@ -227,9 +268,18 @@ class StreamManager:
             return False
             
         if not self.stream_key:
-            print("No stream key set - please set a valid YouTube stream key")
+            print("No stream key available - YouTube API initialization failed")
             return False
             
+        # Create a new broadcast for this streaming session
+        print("Creating YouTube broadcast for this streaming session...")
+        broadcast_id = self.youtube_api.create_broadcast()
+        if not broadcast_id:
+            print("Failed to create broadcast - cannot start streaming")
+            return False
+            
+        print(f"Created and bound broadcast (ID: {broadcast_id})")
+                
         # Set up the RTMP URL with the stream key
         self.stream_url = f"{DEFAULT_RTMP_URL}/{self.stream_key}"
         print(f"Starting stream to: {DEFAULT_RTMP_URL}/{self.stream_key[:4]}...")
