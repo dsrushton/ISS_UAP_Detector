@@ -104,11 +104,10 @@ def test_runs_are_repeatable(pipeline):
     first = run_eval(pipeline, frames, frame_mode="all")
     # Frame counting continues inside V1, so compare detections, not RCNN timing.
     second = run_eval(pipeline, frames, frame_mode="all")
-    boxes = (
-        lambda report: [  # noqa: E731
-            d["box"] for f in report["frames"][5:] for d in f["detections"]
-        ]
-    )
+
+    def boxes(report):
+        return [d["box"] for f in report["frames"][5:] for d in f["detections"]]
+
     assert boxes(first) == boxes(second)
 
 
