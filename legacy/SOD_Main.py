@@ -1150,7 +1150,7 @@ def main():
         print("Videos include 3s pre-detection buffer")
         
         # YouTube ISS live stream URL
-        youtube_url = 'https://www.youtube.com/watch?v=DIgkvm2nmHc'
+        youtube_url = 'https://www.youtube.com/watch?v=M3HKLzjvKPc'
         
         print("\nConnecting to ISS live feed...")
         sod.process_video_stream(youtube_url, is_youtube=True)

@@ -1,6 +1,6 @@
 # ISS UAP Detector V2.0 — rewrite plan
 
-Status: draft for review. Branch: `v2.0` (cut from `dev` at `3d46021`).
+Status: M0 built; M1 onward planned. Branch: `v2.0` (cut from `dev` at `3d46021`).
 Source of the design: the "Self-improving UAP detection system architecture" discussion, mapped onto the V1 code as it stands on `dev`.
 
 ## 1. What V2 is
@@ -64,7 +64,7 @@ tests/
 docs/
 ```
 
-V1's `SOD_*.py` files stay untouched on `dev`. On `v2.0` they move to `legacy/` once the headless harness can run them for comparison, and are deleted when V2 reaches parity.
+V1's `SOD_*.py` files stay untouched on `dev`. On `v2.0` they live in `legacy/`, where the headless harness runs them for comparison, and are deleted when V2 reaches parity.
 
 ## 4. What is ported, rewritten, or dropped
 
@@ -128,7 +128,7 @@ The golden set never enters training.
 
 Each milestone ends in something runnable and verifiable without a display.
 
-**M0 — Skeleton and harness**
+**M0 — Skeleton and harness** (done)
 - Package scaffold, `pyproject.toml`, config object, `CLAUDE.md`, tests wired up
 - `uapd eval`: run a pipeline headlessly over a clip or frame folder and write detections + metrics to JSON
 - Harness can run V1 from `legacy/` so later milestones have a baseline

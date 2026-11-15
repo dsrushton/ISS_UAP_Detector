@@ -39,3 +39,11 @@ youtube_config.py
 client_secrets.json
 youtube_token.json
 youtube_stream_id.json
+
+# V2
+.venv/
+*.pth
+.pytest_cache/
+.ruff_cache/
+reports/
+Detections/

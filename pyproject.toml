@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "uapd"
+version = "2.0.0.dev0"
+description = "Self-improving detector for unidentified objects in the ISS live feed"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python>=4.8",
+]
+
+[project.optional-dependencies]
+# Needed by anything that runs a region model, including the legacy V1 pipeline.
+torch = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "Pillow>=8.0",
+]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+uapd = "uapd.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["uapd"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

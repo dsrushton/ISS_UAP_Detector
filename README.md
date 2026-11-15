@@ -1,4 +1,29 @@
-# SpaceObjectDetector_1.1
+# ISS UAP Detector
+
+## V2.0 (in progress, branch `v2.0`)
+
+V2 rebuilds the detector as a self-improving system: detections become reviewable events, reviews become a labelled stockpile of prosaic look-alikes, and retrained filters are promoted only when they pass an evaluation gate. The plan is in [docs/V2_PLAN.md](docs/V2_PLAN.md).
+
+What exists so far (milestone M0):
+
+- `uapd/` package with a typed config object and a pipeline interface
+- `uapd eval`, a headless harness that runs a pipeline over a video file or a folder of frames and writes detections and metrics to JSON
+- An adapter that runs the unmodified V1 detector through the harness as the baseline
+
+```bash
+uv venv && uv pip install -e '.[torch,dev]'
+pytest
+uapd eval path/to/clip.mp4 --weights best_map_model.pth --out reports/clip.v1.json
+```
+
+## V1 (SpaceObjectDetector 1.1)
+
+The V1 application now lives in `legacy/`. Run it from the repo root:
+
+```bash
+pip install -r legacy/requirements.txt
+python legacy/SOD_Main.py
+```
 
 Download the RCNN model @ https://drive.google.com/file/d/13C2r1YmuHA-NZSbe8CKWmUgwFjo3502_/view?usp=sharing
 
