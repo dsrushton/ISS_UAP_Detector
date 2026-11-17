@@ -29,6 +29,7 @@ from SOD_Constants import (
     POST_DETECTION_SECONDS,
     SAVE_INTERVAL
 )
+import SOD_Constants as const
 from SOD_Utils import get_best_stream_url, crop_frame, ensure_save_directory
 from SOD_Video import VideoManager
 from SOD_Logger import StatusLogger
@@ -428,9 +429,6 @@ class SpaceObjectDetectionSystem:
             if log_this_frame:
                 self.logger.start_frame()
             
-            # Get latest constants
-            import SOD_Constants as const
-            
             # Reset test frame flag
             self.current_frame_is_test = False
             
@@ -587,14 +585,12 @@ class SpaceObjectDetectionSystem:
             # This ensures that subsequent detections during the same video recording
             # are saved with incremented suffixes (-a, -b, -c, etc.)
             elif has_detection and self.video and self.video.recording and self.capture:
-                # Only process if we're within the POST_DETECTION_SECONDS window
-                # but after the SAVE_s     fv
-                # 
-                # 
-                # VAL to avoid saving frames too frequently
+                # Only save if we're within the POST_DETECTION_SECONDS window and
+                # at least SAVE_INTERVAL has elapsed since the last JPG save.
+                # Read live via const so Console edits take effect.
                 current_time = time.time()
-                if (self.video.frames_since_detection / self.fps < POST_DETECTION_SECONDS and 
-                    current_time - self.capture.last_save_time >= SAVE_INTERVAL):
+                if (self.video.frames_since_detection / self.fps < const.get_value('POST_DETECTION_SECONDS') and
+                    current_time - self.capture.last_save_time >= const.get_value('SAVE_INTERVAL')):
                     # Process the detection to save a JPG with the next suffix
                     self.capture.process_detections(annotated_frame, detections, debug_view)
             
@@ -614,13 +610,15 @@ class SpaceObjectDetectionSystem:
             # Display the combined frame using DisplayManager with optional rate limiting
             # Only display every X frames to reduce display overhead (e.g., 2 = 30fps display at 60fps processing)
             display_rate = 1  # Set to 1 for every frame, 2 for every other frame, etc.
+            show_start = time.time()
             key = self.display.show_frame(combined_frame, rate_limit=display_rate)
             
             # Update frame count
             self.frame_count += 1
             
-            # Log timing information
-            display_time = time.time() - display_start
+            # Log timing information ('display' now measures only show_frame,
+            # not video buffering/recording/streaming that happens in between)
+            display_time = time.time() - show_start
             self.timing_stats['display'].append(display_time)
             
             total_iteration_time = time.time() - iteration_start

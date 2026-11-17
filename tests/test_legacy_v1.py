@@ -2,7 +2,7 @@
 
 The stub stands in for the model only: region output is fixed to one space box
 covering the whole cropped frame. Everything downstream (V1's threading, crop,
-masks, contour gates) is the unmodified legacy code.
+masks, contour gates) is the legacy code as it stands in legacy/.
 """
 
 from __future__ import annotations

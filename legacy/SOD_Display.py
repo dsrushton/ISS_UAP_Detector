@@ -39,11 +39,9 @@ class DisplayManager:
         self.drawing_avoid_box = False
         self.avoid_start_pos = None
         self.current_avoid_box = None
-        
-        # Update window title
-        self._update_window_title()
-        
-        # Set up mouse callback
+
+        # The Qt backend (Linux wheels) refuses setWindowTitle until a window
+        # exists. The Win32 backend used on Windows created one implicitly.
         cv2.namedWindow('ISS Object Detection')
         cv2.setMouseCallback('ISS Object Detection', self._mouse_callback)
         

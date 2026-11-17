@@ -64,7 +64,7 @@ tests/
 docs/
 ```
 
-V1's `SOD_*.py` files stay untouched on `dev`. On `v2.0` they live in `legacy/`, where the headless harness runs them for comparison, and are deleted when V2 reaches parity.
+V1's `SOD_*.py` files stay untouched on `dev`. On `v2.0` they live in `legacy/`, where the headless harness runs them for comparison, and are deleted when V2 reaches parity. Since M1, `legacy/` carries the July 2026 patch set (scale fix, 3-point contour minimum, working flare guard, truthful `area`, cleanup), because it is the only live app until M2. The baseline in `uapd eval --pipeline legacy-v1` is therefore patched V1; unpatched V1 is on `dev`.
 
 ## 4. What is ported, rewritten, or dropped
 

@@ -8,7 +8,7 @@ What exists so far (milestones M0 and M1):
 
 - `uapd/` package with a typed config object and a pipeline interface
 - `uapd eval`, a headless harness that runs a pipeline over a video file or a folder of frames and writes detections and metrics to JSON
-- An adapter that runs the unmodified V1 detector through the harness as the baseline
+- An adapter that runs the V1 detector through the harness as the baseline
 - The V2 core pipeline: the V1 region model, then a candidate generator that measures at full resolution and reports every rejected candidate with the gates it failed
 
 ```bash
@@ -22,7 +22,7 @@ uapd eval path/to/clip.mp4 --pipeline legacy-v1 --weights best_map_model.pth --o
 
 ## V1 (SpaceObjectDetector 1.1)
 
-The V1 application now lives in `legacy/`. Run it from the repo root:
+The V1 application now lives in `legacy/`, with the July 2026 fixes applied (objects down to about 5 px are no longer discarded, the lens-flare guard works, saved metrics match what gated the detection). The unpatched original is on the `dev` branch. Run it from the repo root:
 
 ```bash
 pip install -r legacy/requirements.txt

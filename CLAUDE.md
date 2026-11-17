@@ -22,7 +22,7 @@ Three rules from the plan that govern every change:
   - `pipelines/` — runnable pipelines; `core.py` is V2, `legacy_v1.py` wraps the V1 detector
   - `eval/headless.py` — the headless harness
   - `cli.py` — the `uapd` command
-- `legacy/` — V1, unmodified. It is the baseline, not a place for fixes.
+- `legacy/` — the V1 live app, with the July 2026 patch set applied (scale fix, 3-point contour minimum, working lens-flare guard, truthful `area`, dead-code cleanup). It is the app that runs day to day until V2 has a live runtime, and the baseline `uapd eval --pipeline legacy-v1` compares against. The original unpatched V1 is on `dev`. New work still goes in `uapd/`.
 - `tests/` — pytest suite
 - `docs/V2_PLAN.md` — architecture, data model, milestones, open decisions
 
@@ -53,12 +53,16 @@ python legacy/SOD_Main.py        # V1 live app, run from the repo root
 
 ## Known V1 behaviour (do not port)
 
-These are in `legacy/` and stay there so the baseline is honest. V2 code must not reproduce them:
+Fixed in `legacy/` by the July 2026 patch set, still present on `dev`:
 
-- Candidates are measured on a 0.6× image but checked against full-scale thresholds, so the real minimum object size is about 8 px, not 5.
-- A candidate needs at least 10 contour points, which rejects small and square-edged objects.
-- The lens-flare guard is inert: `skip_save`, `consecutive_lf` and `lf_pause_until` are written and never read.
-- Saved `area` is the bounding-box area, not the contour area that gated the detection.
+- Candidates were measured on a 0.6× image but checked against full-scale thresholds, so the real minimum object size was about 8 px, not 5.
+- A candidate needed at least 10 contour points, which rejected small and square-edged objects.
+- The lens-flare guard was inert. In `legacy/` it now skips anomaly detection while `MAX_LENS_FLARES` or more flares are present.
+- Saved `area` was the bounding-box area. It is now the contour area that gated the detection, with `bbox_area` beside it.
+
+Still in `legacy/`. V2 code must not reproduce these:
+
+- Detection still runs on a 0.6× image; sizes are scaled back before the gates, so small objects are measured coarsely.
 - The live feed URL is hard-coded in `legacy/SOD_Main.py`; V2 keeps it in `Config.source.live_url`.
 - The background ring is built with the morphology kernel (size 1), so it is empty: `bg_brightness` is always 0, `contrast` equals object brightness and `MAX_BG_BRIGHTNESS` never rejects anything.
 - Area is `cv2.contourArea`, which is 16 for a 5×5 px object, so `MIN_CONTOUR_AREA = 25` rejects it. V2 counts pixels.

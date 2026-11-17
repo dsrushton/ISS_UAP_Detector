@@ -1,7 +1,9 @@
-"""Runs the unmodified V1 detector (legacy/SOD_Detections.py) behind the Pipeline interface.
+"""Runs the V1 detector (legacy/SOD_Detections.py) behind the Pipeline interface.
 
-This is the baseline every V2 stage is compared against. The V1 code is not
-changed; this adapter only controls how it is driven:
+This is the baseline every V2 stage is compared against. ``legacy/`` holds V1
+with the July 2026 patch set (scale fix, flare guard, truthful area); the
+unpatched original is on the ``dev`` branch. This adapter does not alter the V1
+code, it only controls how it is driven:
 
 * V1 runs the RCNN in a background thread and uses whatever result has arrived.
   With ``sync=True`` (the default) the adapter waits for each RCNN run to finish

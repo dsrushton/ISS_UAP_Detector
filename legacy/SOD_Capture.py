@@ -39,9 +39,6 @@ class CaptureManager:
         # Initialize pause timer
         self.pause_until = 0  # Not paused by default
         
-        # Initialize burst capture counter
-        self.burst_remaining = 0
-        
         # Setup save queue and worker thread
         self.save_queue = queue.Queue()
         self.save_thread = None
@@ -103,6 +100,8 @@ class CaptureManager:
                 if success:
                     print(f"Saved frame to {save_path}")
                     saved_files.add(save_path)
+                    if len(saved_files) > 5000:  # Bound memory over long sessions
+                        saved_files.clear()
                 else:
                     print(f"Failed to save frame to {save_path}")
                 
@@ -268,35 +267,6 @@ class CaptureManager:
         except Exception as e:
             print(f"Error saving raw frame: {str(e)}")
 
-    def start_burst_capture(self, frame_count: int = 100) -> None:
-        """Start burst capture mode."""
-        self.burst_remaining = frame_count
-        #print(f"\nStarting burst capture of {frame_count} frames...")
-        # Ensure raw directory exists
-        os.makedirs(self.raw_dir, exist_ok=True)
-
-    def process_burst(self, frame: np.ndarray) -> bool:
-        """
-        Process a frame during burst capture.
-        
-        Args:
-            frame: Frame to process
-        
-        Returns:
-            bool: True if burst is still active
-        """
-        if self.burst_remaining > 0:
-            self.save_raw_frame(frame)
-            self.burst_remaining -= 1
-            
-            if self.burst_remaining == 0:
-                print("\nBurst save complete!")
-                return False
-            
-            return True
-        
-        return False
-
     def pause_capture(self, duration: float = 5.0) -> None:
         """
         Pause capture for specified duration.
@@ -330,8 +300,8 @@ class CaptureManager:
                 break
 
     def set_video_counter(self, counter: int) -> None:
-        """Set current video counter and reset jpg suffix."""
-        self.current_video_counter = counter
+        """Set current video number and reset jpg suffix."""
+        self.current_video_number = counter
         self.current_jpg_suffix = 'a'
 
     def get_detection_count(self, video_number: int) -> int:

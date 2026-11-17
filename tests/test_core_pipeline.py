@@ -179,7 +179,7 @@ def test_core_finds_what_v1_finds_plus_small_objects(tmp_path, monkeypatch):
 
     frame = np.zeros((720, 1280, 3), np.uint8)
     cv2.circle(frame, (500, 300), 10, (150, 150, 150), -1)  # large: both find it
-    frame[400:406, 800:806] = 150  # 6x6 px: above the configured minimum of 5
+    frame[400:405, 800:805] = 150  # 5x5 px: exactly the configured minimum
     frames = Frames([frame] * 8)
 
     v1 = LegacyV1Pipeline(weights=weights, rcnn_cycle=5)
@@ -201,7 +201,7 @@ def test_core_finds_what_v1_finds_plus_small_objects(tmp_path, monkeypatch):
             for f, e in zip(found, expected, strict=True)
         )
 
-    large, small = (500 - CROP_LEFT, 300), (803 - CROP_LEFT, 403)
+    large, small = (500 - CROP_LEFT, 300), (802.5 - CROP_LEFT, 402.5)
     assert same(centres(v1_report, 7), [large])
     assert same(centres(core_report, 7), [large, small])
     # V1 has no regions for its first five frames; the core pipeline starts at once.
