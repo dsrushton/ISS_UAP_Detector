@@ -82,7 +82,6 @@ def test_background_is_measured_around_the_object():
     [
         ((100, 80, 120, 10, 150), "max_size"),
         ((100, 80, 10, 10, 230), "max_brightness"),
-        ((100, 80, 10, 10, 20), "contrast"),
     ],
 )
 def test_gates(square, gate):
@@ -148,9 +147,37 @@ def test_avoid_boxes():
     assert miss.accepted
 
 
+MEASURE_FAINT = dataclasses.replace(CandidateConfig(), measure_faint=True)
+
+
 def test_every_failed_gate_is_listed():
-    (candidate,) = _find(_frame((1, 90, 3, 3, 20))).candidates
+    (candidate,) = _find(_frame((1, 90, 3, 3, 20)), MEASURE_FAINT).candidates
     assert candidate.failed == ("min_dimension", "min_area", "contrast", "border")
+
+
+def test_faint_candidates_are_counted_not_measured():
+    # Peak brightness 20 is below min_contrast (23), so the contrast gate must fail.
+    frame = _frame((100, 80, 10, 10, 20), (150, 80, 1, 1, 12), (200, 80, 10, 10, 150))
+    found = _find(frame)
+    assert found.found == 3
+    assert found.faint == 2
+    assert [c.box for c in found.candidates] == [(200, 80, 10, 10)]
+    assert not found.truncated
+
+    measured = _find(frame, MEASURE_FAINT)
+    assert measured.faint == 0
+    assert [c.failed for c in measured.candidates] == [
+        ("contrast",),
+        ("min_dimension", "min_area", "contrast"),
+        (),
+    ]
+
+
+def test_bright_enough_candidates_are_never_set_aside():
+    # Peak 23 could still pass, so it is measured even though it then fails.
+    found = _find(_frame((96, 76, 18, 18, 9), (100, 80, 10, 10, 23)))
+    assert found.faint == 0
+    assert found.candidates[0].failed == ("contrast",)
 
 
 def test_candidate_limit_keeps_the_largest_and_reports_the_total():

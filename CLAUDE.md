@@ -16,9 +16,10 @@ Three rules from the plan that govern every change:
   - `config.py` — typed, immutable config; loaded once and passed explicitly
   - `pipeline.py` — the `Pipeline` interface and result types
   - `sources/` — frame sources (video file, frame folder)
-  - `regions/` — region models; `rcnn.py` runs the V1 Faster R-CNN weights
+  - `regions/` — region models; `rcnn.py` runs the V1 Faster R-CNN weights; `schedule.py` runs them in step (eval) or in a background thread (live)
   - `framestate.py` — whether a frame is searched (dark, no feed, no space)
   - `candidates.py` — full-resolution candidate generator; returns rejects with their gates
+  - `tracking.py` — links detections into tracks; a track must persist for `tracking.confirm_frames` frames before it counts
   - `pipelines/` — runnable pipelines; `core.py` is V2, `legacy_v1.py` wraps the V1 detector
   - `eval/headless.py` — the headless harness
   - `cli.py` — the `uapd` command
@@ -45,7 +46,8 @@ python legacy/SOD_Main.py        # V1 live app, run from the repo root
 - Configuration comes from a `Config` object passed in. Never read settings at import time and never add module-level mutable settings. (V1's `from SOD_Constants import X` froze values at import, so live edits never reached half the system.)
 - All pixel measurements are in full-resolution pixels of the cropped frame. If an image is downscaled for speed, scale measurements back before comparing or storing them.
 - Every stored measurement must be the exact value that was used to make the decision.
-- Record rejected candidates and the gate that rejected them; do not drop them silently.
+- Record rejected candidates and the gate that rejected them; do not drop them silently. The one exception is by count: candidates whose brightest pixel is below `min_contrast` (about 90 specks of 1–2 px noise per live frame) are tallied per frame as `faint`, not recorded one by one.
+- The live feed is 30 fps camera footage sent at 60 fps, so each camera frame arrives twice. The copies are not identical: a line along the top edge of the picture changes every frame. Do not rely on detecting repeated frames.
 - Anything that produces output records the versions behind it: config fingerprint, model weights hash, code commit.
 - Each milestone must be verifiable headlessly with `uapd eval`. New pipeline stages implement `uapd.pipeline.Pipeline` and register in `uapd/pipelines/__init__.py`.
 - No self-training on anomaly positives. Pseudo-labels are allowed only for distilling the region model on abundant region classes.

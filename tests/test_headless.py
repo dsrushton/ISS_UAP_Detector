@@ -15,8 +15,12 @@ def test_summary_counts_every_frame(fake_pipeline, five_frames):
         "frames": 5,
         "frames_with_detections": 2,
         "detections": 2,
+        "pending": 0,
+        "tracks_confirmed": 0,
+        "transients": 0,
         "rejected": 0,
         "rejected_by_gate": {},
+        "faint": 0,
         "states": {"ok": 5},
         "frames_with_region": {"space": 5},
     }

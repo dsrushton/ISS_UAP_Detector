@@ -90,8 +90,8 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         summary = report["summary"]
         print(
             f"{summary['frames']} frames, {summary['detections']} detections on "
-            f"{summary['frames_with_detections']} frames, {summary['rejected']} rejected "
-            f"candidates -> {args.out}",
+            f"{summary['frames_with_detections']} frames, {summary['transients']} transients, "
+            f"{summary['rejected']} rejected candidates -> {args.out}",
             file=sys.stderr,
         )
     else:

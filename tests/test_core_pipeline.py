@@ -11,7 +11,8 @@ from uapd.eval import run_eval
 from uapd.pipeline import PipelineError, Region
 from uapd.pipelines.core import CorePipeline
 
-CONFIG = Config.from_dict({"regions": {"cycle_frames": 5}})
+# Persistence gate off here; tests/test_tracking.py covers it.
+CONFIG = Config.from_dict({"regions": {"cycle_frames": 5}, "tracking": {"confirm_frames": 1}})
 CROP_LEFT = CONFIG.frame.crop_left
 CROPPED_WIDTH = 1280 - CROP_LEFT - CONFIG.frame.crop_right
 
@@ -72,16 +73,23 @@ def test_detects_from_the_first_frame_in_cropped_coordinates():
 
 def test_rejected_candidates_reach_the_report():
     pipeline = CorePipeline(CONFIG, FakeRegionModel())
-    frames = Frames([feed_frame((640, 300, 12, 150), (700, 400, 3, 150), (800, 500, 12, 20))] * 2)
-    report = run_eval(pipeline, frames)
+    frame = feed_frame(
+        (640, 300, 12, 150), (700, 400, 3, 150), (800, 500, 12, 210), (900, 600, 12, 20)
+    )
+    report = run_eval(pipeline, Frames([frame] * 2))
 
     assert report["summary"]["detections"] == 2
     assert report["summary"]["rejected"] == 4
-    assert report["summary"]["rejected_by_gate"] == {"contrast": 2, "min_dimension": 2}
-    rejected = report["frames"][0]["rejected"]
-    assert [r["gates"] for r in rejected] == [["min_dimension", "min_area"], ["contrast"]]
-    assert rejected[0]["metrics"]["width"] == 3
-    assert rejected[1]["metrics"]["contrast"] == 20.0
+    assert report["summary"]["rejected_by_gate"] == {"max_brightness": 2, "min_dimension": 2}
+    assert report["summary"]["faint"] == 2
+    record = report["frames"][0]
+    assert [r["gates"] for r in record["rejected"]] == [
+        ["min_dimension", "min_area"],
+        ["max_brightness"],
+    ]
+    assert record["rejected"][0]["metrics"]["width"] == 3
+    assert record["rejected"][1]["metrics"]["obj_brightness"] == 210.0
+    assert record["faint"] == 1
 
 
 def test_candidates_mode_lists_frames_with_only_rejections():
@@ -145,6 +153,43 @@ def test_narrow_frames_are_rejected():
     pipeline = CorePipeline(CONFIG, FakeRegionModel())
     with pytest.raises(PipelineError, match="configured crop"):
         pipeline.process(np.zeros((720, 300, 3), np.uint8), 0)
+
+
+def test_background_regions_give_the_same_detections():
+    frames = Frames([feed_frame((640, 300, 12, 150))] * 12)
+    model = FakeRegionModel()
+    pipeline = CorePipeline(CONFIG, model, background=True)
+    try:
+        report = run_eval(pipeline, frames, frame_mode="all")
+    finally:
+        pipeline.close()
+    assert report["summary"]["detections"] == 12
+    assert report["pipeline"]["regions_in_background"] is True
+    assert 1 <= model.calls <= 3
+    assert model.closed
+
+
+def test_region_model_errors_in_the_background_are_raised():
+    class Broken(FakeRegionModel):
+        def detect(self, frame):
+            raise RuntimeError("boom")
+
+    pipeline = CorePipeline(CONFIG, Broken(), background=True)
+    with pytest.raises(PipelineError, match="region model failed: boom"):
+        pipeline.process(feed_frame(), 0)
+    pipeline.close()
+
+
+def test_cropped_frames_can_refresh_regions_and_override_avoid_boxes():
+    model = FakeRegionModel()
+    pipeline = CorePipeline(CONFIG, model)
+    cropped = feed_frame((640, 300, 12, 150))[:, CROP_LEFT : 1280 - CONFIG.frame.crop_right]
+    assert len(pipeline.process_cropped(cropped, 0).detections) == 1
+    assert len(pipeline.process_cropped(cropped, 1, refresh_regions=True).detections) == 1
+    assert model.calls == 2
+    blocked = pipeline.process_cropped(cropped, 2, avoid_boxes=[(0.0, 0.0, 939.0, 720.0)])
+    assert [r.gates for r in blocked.rejected] == [("avoid_box",)]
+    assert pipeline.search_area.mask.shape == (720, CROPPED_WIDTH)
 
 
 def test_close_closes_the_region_model():

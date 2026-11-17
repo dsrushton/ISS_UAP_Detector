@@ -9,6 +9,7 @@ The report has two parts with different guarantees:
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 import subprocess
@@ -20,10 +21,10 @@ from typing import Any
 import numpy as np
 
 from uapd import __version__
-from uapd.pipeline import FrameResult, Pipeline
+from uapd.pipeline import Detection, FrameResult, Pipeline
 from uapd.sources import FrameSource
 
-REPORT_SCHEMA_VERSION = 2
+REPORT_SCHEMA_VERSION = 3
 FRAME_MODES = ("detections", "candidates", "all")
 
 
@@ -53,6 +54,10 @@ def run_eval(
     detections_total = 0
     frames_with_detections = 0
     rejected_total = 0
+    pending_total = 0
+    tracks_confirmed = 0
+    transients = 0
+    faint_total = 0
     rejected_by_gate: Counter[str] = Counter()
 
     started = time.perf_counter()
@@ -71,12 +76,21 @@ def run_eval(
             frames_with_detections += 1
             detections_total += len(result.detections)
         rejected_total += len(result.rejected)
+        faint_total += result.faint
         for rejected in result.rejected:
             rejected_by_gate[rejected.gates[0] if rejected.gates else "unknown"] += 1
-        listed = result.detections or (frame_mode == "candidates" and result.rejected)
+        pending_total += len(result.pending)
+        tracks_confirmed += len(result.confirmed_tracks)
+        transients += sum(1 for track in result.ended_tracks if not track.confirmed)
+        other = result.rejected or result.pending or result.ended_tracks
+        listed = result.detections or (frame_mode == "candidates" and other)
         if listed or frame_mode == "all":
             frames_out.append(_frame_record(result))
     elapsed = time.perf_counter() - started
+    # A pipeline that tracks reports the tracks still open at the end of the clip.
+    finish = getattr(pipeline, "finish", None)
+    open_tracks = finish() if callable(finish) else []
+    transients += sum(1 for track in open_tracks if not track.confirmed)
 
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
@@ -87,9 +101,16 @@ def run_eval(
             "frames": processed,
             "frames_with_detections": frames_with_detections,
             "detections": detections_total,
+            # Accepted candidates on tracks that had not persisted long enough yet.
+            "pending": pending_total,
+            "tracks_confirmed": tracks_confirmed,
+            # Tracks that ended without persisting: one-frame flashes.
+            "transients": transients,
             "rejected": rejected_total,
             # Counted by the first gate each rejected candidate failed.
             "rejected_by_gate": dict(sorted(rejected_by_gate.items())),
+            # Too faint to pass the contrast gate; counted, not measured.
+            "faint": faint_total,
             "states": dict(sorted(states.items())),
             "frames_with_region": dict(sorted(region_frames.items())),
         },
@@ -124,15 +145,30 @@ def _frame_record(result: FrameResult) -> dict[str, Any]:
             {"label": r.label, "box": [round(v, 1) for v in r.box], "score": round(r.score, 4)}
             for r in result.regions
         ],
-        "detections": [{"box": list(d.box), "metrics": d.metrics} for d in result.detections],
+        "detections": [_detection_record(d) for d in result.detections],
     }
+    if result.pending:
+        record["pending"] = [_detection_record(d) for d in result.pending]
+    if result.confirmed_tracks:
+        record["confirmed_tracks"] = list(result.confirmed_tracks)
+    if result.ended_tracks:
+        record["ended_tracks"] = [dataclasses.asdict(t) for t in result.ended_tracks]
     if result.rejected:
         record["rejected"] = [
             {"box": list(r.box), "gates": list(r.gates), "metrics": r.metrics}
             for r in result.rejected
         ]
+    if result.faint:
+        record["faint"] = result.faint
     if result.notes:
         record["notes"] = result.notes
+    return record
+
+
+def _detection_record(detection: Detection) -> dict[str, Any]:
+    record: dict[str, Any] = {"box": list(detection.box), "metrics": detection.metrics}
+    if detection.track is not None:
+        record["track"] = detection.track
     return record
 
 

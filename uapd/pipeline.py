@@ -38,6 +38,21 @@ class Detection:
 
     box: tuple[int, int, int, int]  # x, y, w, h
     metrics: dict[str, Any] = field(default_factory=dict)
+    track: int | None = None  # id of the track it belongs to, when the pipeline tracks
+
+
+@dataclass(frozen=True)
+class TrackSummary:
+    """A track that has ended."""
+
+    id: int
+    confirmed: bool  # False for a transient: it ended before it persisted long enough
+    first_index: int  # frame it was first seen on
+    last_index: int  # frame it was last seen on
+    frames_seen: int  # frames it was seen on
+    first_box: tuple[int, int, int, int]
+    last_box: tuple[int, int, int, int]
+    max_contrast: float | None
 
 
 @dataclass(frozen=True)
@@ -54,8 +69,14 @@ class FrameResult:
     index: int
     state: str
     regions: list[Region] = field(default_factory=list)
+    # Accepted candidates. With tracking, only those on a confirmed track.
     detections: list[Detection] = field(default_factory=list)
+    # Accepted candidates whose track has not persisted long enough yet.
+    pending: list[Detection] = field(default_factory=list)
+    confirmed_tracks: list[int] = field(default_factory=list)  # confirmed on this frame
+    ended_tracks: list[TrackSummary] = field(default_factory=list)  # ended on this frame
     rejected: list[Rejected] = field(default_factory=list)
+    faint: int = 0  # candidates too faint to pass, counted without being measured
     notes: dict[str, Any] = field(default_factory=dict)
 
 

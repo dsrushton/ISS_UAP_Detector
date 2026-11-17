@@ -74,9 +74,28 @@ class CandidateConfig:
     border_margin: int = 3
     # Safety limit on candidates measured per frame (largest first). Hitting it is recorded.
     max_candidates: int = 200
+    # Candidates whose brightest pixel is below min_contrast cannot pass the contrast
+    # gate. On the live feed there are about 90 of these per frame (1-2 px noise just
+    # above the brightness threshold), so they are counted per frame, not measured.
+    # Set to true to measure and record each one.
+    measure_faint: bool = False
     filter_iss: bool = False
     filter_panel: bool = True
     filter_lf: bool = True
+
+
+@dataclass(frozen=True)
+class TrackingConfig:
+    # A detection continues a track when its box is within this many pixels of the
+    # track's last box (0 = the boxes must touch or overlap).
+    match_distance: float = 20.0
+    # Frames a track must be seen on before it counts as a detection. 1 turns the
+    # persistence gate off. The live feed is 30 fps camera footage sent at 60 fps, so
+    # each camera frame arrives twice: a one-camera-frame flash (cosmic ray) is seen
+    # on 2 frames and never reaches 3.
+    confirm_frames: int = 3
+    # Frames a track may go unseen before it ends (2 = one camera frame on the live feed).
+    max_missed_frames: int = 2
 
 
 @dataclass(frozen=True)
@@ -92,6 +111,7 @@ class Config:
     frame: FrameConfig = field(default_factory=FrameConfig)
     regions: RegionConfig = field(default_factory=RegionConfig)
     candidates: CandidateConfig = field(default_factory=CandidateConfig)
+    tracking: TrackingConfig = field(default_factory=TrackingConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
 
     @classmethod

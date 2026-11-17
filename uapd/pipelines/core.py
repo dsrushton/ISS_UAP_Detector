@@ -1,11 +1,17 @@
-"""The V2 core pipeline: crop, regions, frame state, candidates.
+"""The V2 core pipeline: crop, regions, frame state, candidates, tracks.
 
-Per-frame only; tracking and events come in the next milestone. Differences from
-V1 that are visible in the output:
+Differences from V1 that are visible in the output:
 
-* The region model runs on the first frame and then every ``cycle_frames``, in
-  step with the frames, so a run is repeatable. V1 has no regions until frame 120.
-  Between runs the regions are reused; ``regions_age`` records how stale they are.
+* Accepted candidates are linked into tracks. Only candidates on a track that has
+  persisted (``tracking.confirm_frames``) are detections; the rest are pending,
+  and a track that ends unconfirmed is reported as a transient. See
+  ``uapd.tracking``.
+
+* The region model runs on the first frame and then every ``cycle_frames``. V1 has
+  no regions until frame 120. By default it runs in step with the frames, so a run
+  is repeatable; with ``background=True`` (the live app) it runs in a worker
+  thread. Between runs the regions are reused; ``regions_age`` records how stale
+  they are.
 * Candidates are measured at full resolution (see ``uapd.candidates``).
 * Rejected candidates are returned with the gates they failed.
 * Lens flares are counted, not acted on. V1's guard never did anything, and the
@@ -31,10 +37,12 @@ from uapd.pipeline import (
     Detection,
     FrameResult,
     PipelineError,
-    Region,
     Rejected,
+    TrackSummary,
 )
 from uapd.regions import RegionModel
+from uapd.regions.schedule import BackgroundRegions, SyncRegions
+from uapd.tracking import Tracker
 
 
 class CorePipeline:
@@ -45,16 +53,20 @@ class CorePipeline:
         config: Config,
         region_model: RegionModel,
         avoid_boxes: Sequence[Box] = (),
+        background: bool = False,
     ):
         if config.regions.cycle_frames < 1:
             raise PipelineError("regions.cycle_frames must be at least 1")
         self.config = config
         self.region_model = region_model
         self.avoid_boxes = tuple(avoid_boxes)
+        self.background = background
+        schedule = BackgroundRegions if background else SyncRegions
+        self._schedule = schedule(region_model, config.regions.cycle_frames)
+        self._tracker = Tracker(config.tracking)
         self._frames_seen = 0
-        self._regions: list[Region] = []
-        self._regions_frame: int | None = None  # count of the frame the regions came from
-        self._search_area: SearchArea | None = None
+        self._area_source: int | None = None  # frame the search area was built from
+        self.search_area: SearchArea | None = None
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -63,6 +75,7 @@ class CorePipeline:
             "config_fingerprint": self.config.fingerprint(),
             "config": self.config.to_dict(),
             "region_model": self.region_model.describe(),
+            "regions_in_background": self.background,
             "avoid_boxes": [list(box) for box in self.avoid_boxes],
         }
 
@@ -74,51 +87,77 @@ class CorePipeline:
                 f"frame {index} is {width} px wide; the configured crop removes "
                 f"{crop.crop_left}+{crop.crop_right} px"
             )
-        cropped = frame[:, crop.crop_left : width - crop.crop_right]
-        shape = cropped.shape[:2]
+        return self.process_cropped(frame[:, crop.crop_left : width - crop.crop_right], index)
 
+    def process_cropped(
+        self,
+        cropped: np.ndarray,
+        index: int,
+        avoid_boxes: Sequence[Box] | None = None,
+        refresh_regions: bool = False,
+    ) -> FrameResult:
+        """Process a frame that is already cropped.
+
+        ``avoid_boxes`` replaces the pipeline's own for this frame.
+        ``refresh_regions`` runs the region model on this frame first.
+        """
+        shape = cropped.shape[:2]
         count = self._frames_seen
         self._frames_seen += 1
-        refreshed = (
-            self._regions_frame is None
-            or count - self._regions_frame >= self.config.regions.cycle_frames
-            or self._search_area is None
-            or self._search_area.mask.shape != shape
-        )
-        if refreshed:
-            self._regions = self.region_model.detect(cropped)
-            self._regions_frame = count
-            space = [r.box for r in self._regions if r.label == "space"]
-            self._search_area = build_search_area(shape, space)
 
-        regions = list(self._regions)
+        resized = self.search_area is not None and self.search_area.mask.shape != shape
+        regions, source = self._schedule.update(cropped, count, force=refresh_regions or resized)
+        if self.search_area is None or source != self._area_source:
+            space = [r.box for r in regions if r.label == "space"]
+            self.search_area = build_search_area(shape, space)
+            self._area_source = source
+
+        regions = list(regions)
         state, notes = frame_state(regions, shape, self.config.regions)
-        notes["regions_age"] = count - self._regions_frame
+        notes["regions_age"] = count - source
         notes["lens_flares"] = sum(1 for r in regions if r.label == "lf")
         result = FrameResult(index=index, state=state, regions=regions, notes=notes)
-        if state != STATE_OK:
-            return result
 
-        region_boxes: dict[str, list[Box]] = {}
-        for region in regions:
-            region_boxes.setdefault(region.label, []).append(region.box)
-        found = find_candidates(
-            cropped, self._search_area, self.config.candidates, region_boxes, self.avoid_boxes
-        )
-        for candidate in found.candidates:
-            if candidate.accepted:
-                result.detections.append(Detection(box=candidate.box, metrics=candidate.metrics))
-            else:
-                result.rejected.append(
-                    Rejected(box=candidate.box, gates=candidate.failed, metrics=candidate.metrics)
-                )
-        if found.truncated:
-            notes["candidates_found"] = found.found
-            notes["candidates_measured"] = len(found.candidates)
+        accepted: list[Detection] = []
+        if state == STATE_OK:
+            region_boxes: dict[str, list[Box]] = {}
+            for region in regions:
+                region_boxes.setdefault(region.label, []).append(region.box)
+            found = find_candidates(
+                cropped,
+                self.search_area,
+                self.config.candidates,
+                region_boxes,
+                self.avoid_boxes if avoid_boxes is None else avoid_boxes,
+            )
+            for candidate in found.candidates:
+                if candidate.accepted:
+                    accepted.append(Detection(box=candidate.box, metrics=candidate.metrics))
+                else:
+                    result.rejected.append(
+                        Rejected(
+                            box=candidate.box, gates=candidate.failed, metrics=candidate.metrics
+                        )
+                    )
+            result.faint = found.faint
+            if found.truncated:
+                notes["candidates_found"] = found.found
+                notes["candidates_measured"] = len(found.candidates)
+
+        # Frames that are not searched still move the tracker on, so tracks can end.
+        tracked = self._tracker.update(accepted, index)
+        result.detections = tracked.detections
+        result.pending = tracked.pending
+        result.confirmed_tracks = tracked.confirmed
+        result.ended_tracks = tracked.ended
         return result
 
+    def finish(self) -> list[TrackSummary]:
+        """End the open tracks at the end of a clip and return them."""
+        return self._tracker.finish()
+
     def close(self) -> None:
-        self.region_model.close()
+        self._schedule.close()
 
 
 def build_core_pipeline(

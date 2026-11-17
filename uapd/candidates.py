@@ -10,8 +10,11 @@ Ported from V1's ``detect_anomalies`` / ``analyze_object`` with these difference
   morphology kernel (size 1), which is empty, so its background was always 0.
 * The border distance is measured to the actual edge of the space mask, not to
   the bounding rectangle of the space region.
-* Nothing is dropped. Every candidate is returned with its full measurement
-  vector and every gate it failed; an empty ``failed`` means it was accepted.
+* Nothing is dropped silently. Every measured candidate is returned with its full
+  measurement vector and every gate it failed; an empty ``failed`` means it was
+  accepted. Candidates too faint to pass the contrast gate whatever their
+  background are counted (``CandidateSet.faint``) rather than measured, unless
+  ``measure_faint`` is set.
 """
 
 from __future__ import annotations
@@ -73,11 +76,13 @@ class Candidate:
 @dataclass(frozen=True)
 class CandidateSet:
     candidates: list[Candidate]
-    found: int  # objects found before the max_candidates limit was applied
+    found: int  # objects found, before any were set aside
+    faint: int = 0  # certain contrast rejects that were counted, not measured
 
     @property
     def truncated(self) -> bool:
-        return self.found > len(self.candidates)
+        """True when the max_candidates limit left some objects unmeasured."""
+        return self.found > len(self.candidates) + self.faint
 
 
 def build_search_area(shape: tuple[int, int], space_boxes: Sequence[Box]) -> SearchArea:
@@ -118,13 +123,25 @@ def find_candidates(
     region_boxes = region_boxes or {}
 
     roi = frame[ry : ry + rh, rx : rx + rw]
-    value = roi.max(axis=2) if roi.ndim == 3 else roi
+    value = _max_channel(roi)
     space = area.mask[ry : ry + rh, rx : rx + rw]
 
     search = _search_mask(value, space, config)
     contours, _ = cv2.findContours(search, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     found = len(contours)
-    if found > config.max_candidates:
+    faint = 0
+    if not config.measure_faint:
+        # Contrast is object mean minus background, so it cannot exceed the brightest
+        # pixel in the object's box. Below min_contrast the contrast gate must fail.
+        kept = []
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            if value[y : y + h, x : x + w].max() < config.min_contrast:
+                faint += 1
+            else:
+                kept.append(contour)
+        contours = kept
+    if len(contours) > config.max_candidates:
         contours = sorted(contours, key=_bbox_area, reverse=True)[: config.max_candidates]
 
     border = area.border_distance[ry : ry + rh, rx : rx + rw]
@@ -134,7 +151,18 @@ def find_candidates(
     ]
     # Stable order, independent of how OpenCV walked the mask.
     candidates.sort(key=lambda c: (c.box[1], c.box[0], c.box[3], c.box[2]))
-    return CandidateSet(candidates=candidates, found=found)
+    return CandidateSet(candidates=candidates, found=found, faint=faint)
+
+
+def _max_channel(image: np.ndarray) -> np.ndarray:
+    """Brightest of the colour channels per pixel (numpy's max over the axis is ~20x slower)."""
+    if image.ndim == 2:
+        return image
+    channels = cv2.split(image)
+    value = channels[0]
+    for channel in channels[1:]:
+        value = cv2.max(value, channel)
+    return value
 
 
 def _search_mask(value: np.ndarray, space: np.ndarray, config: CandidateConfig) -> np.ndarray:
