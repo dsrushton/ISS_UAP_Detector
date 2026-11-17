@@ -163,9 +163,11 @@ class CorePipeline:
 def build_core_pipeline(
     weights: str | Path = "best_map_model.pth",
     config: Config | None = None,
+    background: bool = False,
 ) -> CorePipeline:
     """The core pipeline with the V1 Faster R-CNN as its region model."""
     from uapd.regions.rcnn import RcnnRegionModel
 
     config = config or Config()
-    return CorePipeline(config, RcnnRegionModel(weights, config.regions))
+    model = RcnnRegionModel(weights, config.regions)
+    return CorePipeline(config, model, background=background)

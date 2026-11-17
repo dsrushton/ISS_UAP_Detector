@@ -149,9 +149,10 @@ Each milestone ends in something runnable and verifiable without a display.
   - `regions.max_boxes` is applied (best 10 regions); V1 never applied `MAX_RCNN_BOXES`.
   - Frame state still comes from the region model (`td`, `nofeed`); the histogram check waits for footage to tune it on.
 
-**M2 — Tracker, events, store** (tracker built; events, store and live runtime outstanding)
+**M2 — Tracker, events, store** (tracker, live app and per-recording data file built; SQLite index and flare handling outstanding)
 - Built: `uapd/tracking.py`. Accepted candidates are matched to tracks by box distance (`tracking.match_distance`, 20 px). A track counts as a detection once seen on `tracking.confirm_frames` (3) frames; the feed doubles each camera frame, so a one-camera-frame flash is seen on 2 and ends as a counted transient. Tracks survive `max_missed_frames` (2). Not handled yet: stuck hot pixels, which persist and pass.
 - Built: background region inference (`regions/schedule.py`) and faint-candidate tallying, both needed for live speed (about 1.5 ms per frame on a live clip).
+- Built: `uapd run` (`runtime/live.py`). The legacy main loop, display, recorder, capture and restream are reused unchanged; only the detector is replaced. A recording starts for a confirmed track only. An event is one recording, with `Detections/AVI/NNNNN.json` beside the clip (`events.py`): versions, config, regions, and per-frame detections, pending detections, rejects and ended tracks, including the 3 seconds before the recording.
 - Order agreed after M1: live app first, reusing the legacy display, recording and restream code around the V2 core, with a data file per recording; then the review viewer and importer; then the gate and learned filter.
 - IoU tracker, persistence gating, event lifecycle with pre/post buffer
 - Sidecars and SQLite index

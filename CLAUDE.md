@@ -21,6 +21,8 @@ Three rules from the plan that govern every change:
   - `candidates.py` — full-resolution candidate generator; returns rejects with their gates
   - `tracking.py` — links detections into tracks; a track must persist for `tracking.confirm_frames` frames before it counts
   - `pipelines/` — runnable pipelines; `core.py` is V2, `legacy_v1.py` wraps the V1 detector
+  - `events.py` — the data file written beside each recording
+  - `runtime/live.py` — the live app: V2 detection behind the legacy window, recorder and restream
   - `eval/headless.py` — the headless harness
   - `cli.py` — the `uapd` command
 - `legacy/` — the V1 live app, with the July 2026 patch set applied (scale fix, 3-point contour minimum, working lens-flare guard, truthful `area`, dead-code cleanup). It is the app that runs day to day until V2 has a live runtime, and the baseline `uapd eval --pipeline legacy-v1` compares against. The original unpatched V1 is on `dev`. New work still goes in `uapd/`.
@@ -36,6 +38,8 @@ ruff check .
 uapd eval path/to/clip.mp4 --weights best_map_model.pth --out reports/clip.core.json
 uapd eval path/to/clip.mp4 --pipeline legacy-v1 --weights best_map_model.pth --out reports/clip.v1.json
 uapd config
+uapd run                         # V2 live app, run from the repo root (q quits, s restreams, t test frames)
+uapd run path/to/clip.mp4        # the same on a recorded clip
 python legacy/SOD_Main.py        # V1 live app, run from the repo root
 ```
 

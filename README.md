@@ -11,9 +11,14 @@ What exists so far (milestones M0 and M1):
 - An adapter that runs the V1 detector through the harness as the baseline
 - The V2 core pipeline: the V1 region model, then a candidate generator that measures at full resolution and reports every rejected candidate with the gates it failed
 
+- A temporal layer: detections are linked into tracks, and only a track seen on three frames counts, which drops one-frame flashes such as cosmic ray hits
+- `uapd run`, the live app: V2 detection behind the existing window, recording and YouTube restream, writing a JSON data file beside each recording
+
 ```bash
 uv venv && uv pip install -e '.[torch,dev]'
 pytest
+# V2 live app (run from the repo root)
+uapd run
 # V2 core pipeline
 uapd eval path/to/clip.mp4 --weights best_map_model.pth --out reports/clip.core.json
 # V1 baseline on the same clip

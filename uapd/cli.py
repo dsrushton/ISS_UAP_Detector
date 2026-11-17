@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
 
@@ -46,6 +47,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="override V1's RCNN_DETECTION_CYCLE, frames between runs (legacy-v1 only)",
     )
 
+    run = sub.add_parser(
+        "run", help="run the live app: window, recording and restream, with V2 detection"
+    )
+    run.add_argument(
+        "source", nargs="?", help="video file or YouTube URL (default: the live feed in the config)"
+    )
+    run.add_argument(
+        "--weights", default="best_map_model.pth", help="path to the RCNN weights file"
+    )
+    run.add_argument("--profile", help="TOML profile to apply over the defaults")
+
     cfg = sub.add_parser("config", help="print the effective V2 configuration as JSON")
     cfg.add_argument("--profile", help="TOML profile to apply over the defaults")
 
@@ -59,6 +71,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_eval(args)
         if args.command == "config":
             return _cmd_config(args)
+        if args.command == "run":
+            return _cmd_run(args)
     except (PipelineError, SourceError, ConfigError, ValueError) as exc:
         print(f"uapd: error: {exc}", file=sys.stderr)
         return 2
@@ -97,6 +111,21 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     else:
         print(dumps_report(report))
     return 0
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    from uapd.runtime.live import run_live
+
+    config = Config.load(args.profile) if args.profile else Config()
+    try:
+        run_live(config, args.weights, args.source)
+    except KeyboardInterrupt:
+        pass
+    # The legacy restream leaves threads running that keep the process alive after
+    # everything has been cleaned up, so end the process here.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 def _cmd_config(args: argparse.Namespace) -> int:
