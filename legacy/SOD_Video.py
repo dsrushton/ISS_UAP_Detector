@@ -59,8 +59,11 @@ class ThreadedVideoWriter:
         
         return True
         
-    def write(self, frame: np.ndarray) -> bool:
-        """Add a frame to the queue for writing."""
+    def write(self, frame: np.ndarray, copy: bool = True) -> bool:
+        """Add a frame to the queue for writing.
+
+        Pass copy=False only for a frame nothing else will change.
+        """
         if not self.is_running:
             return False
             
@@ -69,7 +72,7 @@ class ThreadedVideoWriter:
             # overwrites it for the next one; the writer thread runs behind (it starts
             # with the whole pre-detection buffer queued), so without a copy it wrote
             # newer frames in place of the ones it was given.
-            self.frame_queue.put(frame.copy(), block=False)
+            self.frame_queue.put(frame.copy() if copy else frame, block=False)
             return True
         except queue.Full:
             return False
@@ -252,7 +255,8 @@ class VideoManager:
             # Write all buffered frames to video
             for i, combined_frame in enumerate(buffer_list):
                 if combined_frame is not None:
-                    if self.video_writer.write(combined_frame):
+                    # Buffered frames are already private copies.
+                    if self.video_writer.write(combined_frame, copy=False):
                         frames_written += 1
                     else:
                         self.logger.log_error(f"Failed to write buffered frame {frames_written}")

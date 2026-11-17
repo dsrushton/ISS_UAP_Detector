@@ -12,6 +12,7 @@ Run from the repository root; the legacy modules use paths relative to it.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,8 @@ from uapd.pipeline import STATE_DARK, FrameResult, PipelineError
 from uapd.pipelines.core import CorePipeline, build_core_pipeline
 
 LEGACY_DIR = Path(__file__).resolve().parents[2] / "legacy"
+# If the loop falls this far behind schedule, restart the schedule from now.
+PACING_RESET_SECONDS = 0.5
 
 
 class CoreDetector:
@@ -162,8 +165,10 @@ def run_live(config: Config, weights: str | Path, source: str | None = None) -> 
             self.detector.cleanup()  # the V1 detector the base class made
             self.detector = CoreDetector(build, SOD_Detections.DetectionResults)
             self.events: EventLog | None = None
+            self._frame_due: float | None = None  # when the next frame should be processed
 
         def process_frame(self, *args: Any, **kwargs: Any):
+            self._wait_for_frame_time()
             outcome = super().process_frame(*args, **kwargs)
             result = self.detector.last_result
             if result is not None and self.video is not None:
@@ -177,6 +182,21 @@ def run_live(config: Config, weights: str | Path, source: str | None = None) -> 
                 for path in self.events.written[written:]:
                     print(f"Saved event data to {path}")
             return outcome
+
+        def _wait_for_frame_time(self) -> None:
+            """Hold the loop to the source frame rate.
+
+            The live feed arrives in 5-second chunks. Processing is faster than real
+            time, so an unpaced loop plays each chunk fast and then waits a couple of
+            seconds for the next one: the window and the restream freeze every 5 s.
+            Paced, the loop stays a steady few seconds behind the feed instead.
+            """
+            now = time.perf_counter()
+            if self._frame_due is None or now - self._frame_due > PACING_RESET_SECONDS:
+                self._frame_due = now  # first frame, or too far behind to catch up
+            elif self._frame_due > now:
+                time.sleep(self._frame_due - now)
+            self._frame_due += 1.0 / self.fps
 
         def _event_log(self) -> EventLog:
             header = {
