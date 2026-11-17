@@ -33,6 +33,10 @@ This is a test, not a real capture. A 6-pixel grey dot was painted into a record
 
 The left half is the detector's view of the space region; the right half is the frame with the region model's boxes. The red box drops out briefly where the dot crosses a brighter patch and stops qualifying.
 
+Zoomed in four times on the dot:
+
+![Zoom on the planted test dot](docs/demo/test_dot_zoom.gif)
+
 - [Full clip (MP4)](docs/demo/test_dot.mp4)
 - [Still frame](docs/demo/test_dot.jpg)
 - [The data file saved with the recording](docs/demo/test_dot.json)
