@@ -85,6 +85,8 @@ V1's `SOD_*.py` files stay untouched on `dev`. On `v2.0` they live in `legacy/`,
 **V1 defects that must not be carried over:**
 - Scale mismatch: candidates are measured on a 0.6× image but `analyze_object` applies full-scale thresholds, so the real minimum size is about 8 px, not 5. This discards the small, faint objects the project exists to find. V2 measures everything in full-resolution pixels.
 - `len(contour) < 10` point-count gate, which also biases against small objects
+- Empty background ring (found during M1): the ring is dilated with the size-1 morphology kernel, so `bg_brightness` is always 0, `contrast` is just object brightness and `MAX_BG_BRIGHTNESS` is inert
+- `cv2.contourArea` as the area (found during M1): a 5×5 px object measures 16 and fails `MIN_CONTOUR_AREA = 25`. V2 counts the pixels the object covers
 - Flare guard that does nothing: `skip_save`, `consecutive_lf` and `lf_pause_until` are written but never read
 - Saved `area` is overwritten with bounding-box area, so metadata does not match what gated the detection
 - `gpu_crop_frame` (slower than a slice), repeated re-cropping, per-frame `import`
@@ -134,10 +136,18 @@ Each milestone ends in something runnable and verifiable without a display.
 - Harness can run V1 from `legacy/` so later milestones have a baseline
 - Remove committed `__pycache__`
 
-**M1 — Core pipeline port**
+**M1 — Core pipeline port** (built; check on real footage outstanding)
 - Frame sources, frame state, RCNN region adapter, candidate generator with the scale fix
 - Every candidate logged with its measurement vector and failed gate
 - Check: on the same clips, V2 finds everything V1 finds plus additional small objects; differences are inspected by eye
+- Status: `uapd eval --pipeline core` runs the pipeline; tests cover it on synthetic frames, including a side-by-side with V1. The check on real clips needs `best_map_model.pth` and archived footage.
+- Deliberate differences from V1, to be judged in that check:
+  - Contrast is now object minus a real background ring, so it reads up to about 10 lower than V1's (the ring lies in dark space, at or below `dark_region_threshold`). Objects with brightness 23–33 that V1 accepted can fail `min_contrast = 23`.
+  - No limit of 2 accepted candidates per frame; up to `max_candidates` (200) are measured.
+  - Three or more lens flares do not stop the search. The flare count is recorded per frame; candidates overlapping a flare box are still rejected. The rule is decided in M2.
+  - Regions run in step with the frames (first frame, then every `cycle_frames`) rather than in a background thread. The async worker returns with the live runtime in M2.
+  - `regions.max_boxes` is applied (best 10 regions); V1 never applied `MAX_RCNN_BOXES`.
+  - Frame state still comes from the region model (`td`, `nofeed`); the histogram check waits for footage to tune it on.
 
 **M2 — Tracker, events, store**
 - IoU tracker, persistence gating, event lifecycle with pre/post buffer

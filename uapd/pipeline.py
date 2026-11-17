@@ -40,12 +40,22 @@ class Detection:
     metrics: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class Rejected:
+    """A candidate object that failed one or more gates on this frame."""
+
+    box: tuple[int, int, int, int]  # x, y, w, h
+    gates: tuple[str, ...]  # every gate it failed, in the order they are checked
+    metrics: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class FrameResult:
     index: int
     state: str
     regions: list[Region] = field(default_factory=list)
     detections: list[Detection] = field(default_factory=list)
+    rejected: list[Rejected] = field(default_factory=list)
     notes: dict[str, Any] = field(default_factory=dict)
 
 

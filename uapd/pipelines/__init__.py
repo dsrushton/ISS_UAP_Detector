@@ -14,7 +14,14 @@ def _legacy_v1(**options: Any) -> Pipeline:
     return LegacyV1Pipeline(**options)
 
 
+def _core(**options: Any) -> Pipeline:
+    from uapd.pipelines.core import build_core_pipeline
+
+    return build_core_pipeline(**options)
+
+
 PIPELINES: dict[str, Callable[..., Pipeline]] = {
+    "core": _core,
     "legacy-v1": _legacy_v1,
 }
 

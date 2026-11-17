@@ -62,7 +62,25 @@ def test_eval_missing_source(tmp_path, capsys):
     assert "source not found" in capsys.readouterr().err
 
 
-def test_eval_legacy_missing_weights(frame_folder, tmp_path, capsys):
-    code = cli.main(["eval", str(frame_folder), "--weights", str(tmp_path / "none.pth")])
+@pytest.mark.parametrize("pipeline", ["core", "legacy-v1"])
+def test_eval_missing_weights(pipeline, frame_folder, tmp_path, capsys):
+    weights = str(tmp_path / "none.pth")
+    code = cli.main(["eval", str(frame_folder), "--pipeline", pipeline, "--weights", weights])
     assert code == 2
     assert "model weights not found" in capsys.readouterr().err
+
+
+def test_eval_defaults_to_the_core_pipeline():
+    args = cli.build_parser().parse_args(["eval", "clip.mp4"])
+    assert args.pipeline == "core"
+
+
+def test_eval_rejects_options_of_the_other_pipeline(frame_folder, tmp_path, capsys):
+    profile = tmp_path / "p.toml"
+    profile.write_text("[candidates]\nmin_contrast = 15\n")
+    source = str(frame_folder)
+    assert cli.main(["eval", source, "--rcnn-cycle", "5"]) == 2
+    assert "--rcnn-cycle applies to legacy-v1" in capsys.readouterr().err
+    code = cli.main(["eval", source, "--pipeline", "legacy-v1", "--profile", str(profile)])
+    assert code == 2
+    assert "--profile applies to the core pipeline" in capsys.readouterr().err

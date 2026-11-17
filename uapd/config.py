@@ -69,7 +69,11 @@ class CandidateConfig:
     min_contrast: int = 23
     dark_region_threshold: int = 10
     morph_kernel_size: int = 1
+    # Width of the ring around an object that is measured as its background.
+    background_ring: int = 2
     border_margin: int = 3
+    # Safety limit on candidates measured per frame (largest first). Hitting it is recorded.
+    max_candidates: int = 200
     filter_iss: bool = False
     filter_panel: bool = True
     filter_lf: bool = True

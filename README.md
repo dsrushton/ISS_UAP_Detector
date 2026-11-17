@@ -4,16 +4,20 @@
 
 V2 rebuilds the detector as a self-improving system: detections become reviewable events, reviews become a labelled stockpile of prosaic look-alikes, and retrained filters are promoted only when they pass an evaluation gate. The plan is in [docs/V2_PLAN.md](docs/V2_PLAN.md).
 
-What exists so far (milestone M0):
+What exists so far (milestones M0 and M1):
 
 - `uapd/` package with a typed config object and a pipeline interface
 - `uapd eval`, a headless harness that runs a pipeline over a video file or a folder of frames and writes detections and metrics to JSON
 - An adapter that runs the unmodified V1 detector through the harness as the baseline
+- The V2 core pipeline: the V1 region model, then a candidate generator that measures at full resolution and reports every rejected candidate with the gates it failed
 
 ```bash
 uv venv && uv pip install -e '.[torch,dev]'
 pytest
-uapd eval path/to/clip.mp4 --weights best_map_model.pth --out reports/clip.v1.json
+# V2 core pipeline
+uapd eval path/to/clip.mp4 --weights best_map_model.pth --out reports/clip.core.json
+# V1 baseline on the same clip
+uapd eval path/to/clip.mp4 --pipeline legacy-v1 --weights best_map_model.pth --out reports/clip.v1.json
 ```
 
 ## V1 (SpaceObjectDetector 1.1)

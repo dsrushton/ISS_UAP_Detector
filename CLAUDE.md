@@ -16,7 +16,10 @@ Three rules from the plan that govern every change:
   - `config.py` — typed, immutable config; loaded once and passed explicitly
   - `pipeline.py` — the `Pipeline` interface and result types
   - `sources/` — frame sources (video file, frame folder)
-  - `pipelines/` — runnable pipelines; `legacy_v1.py` wraps the V1 detector
+  - `regions/` — region models; `rcnn.py` runs the V1 Faster R-CNN weights
+  - `framestate.py` — whether a frame is searched (dark, no feed, no space)
+  - `candidates.py` — full-resolution candidate generator; returns rejects with their gates
+  - `pipelines/` — runnable pipelines; `core.py` is V2, `legacy_v1.py` wraps the V1 detector
   - `eval/headless.py` — the headless harness
   - `cli.py` — the `uapd` command
 - `legacy/` — V1, unmodified. It is the baseline, not a place for fixes.
@@ -29,7 +32,8 @@ Three rules from the plan that govern every change:
 uv venv && uv pip install -e '.[torch,dev]'
 pytest
 ruff check .
-uapd eval path/to/clip.mp4 --weights best_map_model.pth --out reports/clip.v1.json
+uapd eval path/to/clip.mp4 --weights best_map_model.pth --out reports/clip.core.json
+uapd eval path/to/clip.mp4 --pipeline legacy-v1 --weights best_map_model.pth --out reports/clip.v1.json
 uapd config
 python legacy/SOD_Main.py        # V1 live app, run from the repo root
 ```
@@ -56,5 +60,7 @@ These are in `legacy/` and stay there so the baseline is honest. V2 code must no
 - The lens-flare guard is inert: `skip_save`, `consecutive_lf` and `lf_pause_until` are written and never read.
 - Saved `area` is the bounding-box area, not the contour area that gated the detection.
 - The live feed URL is hard-coded in `legacy/SOD_Main.py`; V2 keeps it in `Config.source.live_url`.
+- The background ring is built with the morphology kernel (size 1), so it is empty: `bg_brightness` is always 0, `contrast` equals object brightness and `MAX_BG_BRIGHTNESS` never rejects anything.
+- Area is `cv2.contourArea`, which is 16 for a 5×5 px object, so `MIN_CONTOUR_AREA = 25` rejects it. V2 counts pixels.
 - The first RCNN run happens on frame 120, so the first two seconds of any run have no regions.
 - `legacy/Context.md` states thresholds and cadences that no longer match the code. Trust `legacy/SOD_Constants.py`.

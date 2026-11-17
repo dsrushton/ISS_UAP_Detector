@@ -23,8 +23,8 @@ from uapd import __version__
 from uapd.pipeline import FrameResult, Pipeline
 from uapd.sources import FrameSource
 
-REPORT_SCHEMA_VERSION = 1
-FRAME_MODES = ("detections", "all")
+REPORT_SCHEMA_VERSION = 2
+FRAME_MODES = ("detections", "candidates", "all")
 
 
 def run_eval(
@@ -36,8 +36,9 @@ def run_eval(
 ) -> dict[str, Any]:
     """Process every frame of ``source`` and return the report.
 
-    ``frame_mode`` selects which frames are listed individually: only those with
-    detections, or all of them. The summary always covers every processed frame.
+    ``frame_mode`` selects which frames are listed individually: those with
+    detections, those with any candidate (accepted or rejected), or all of them.
+    The summary always covers every processed frame.
     """
     if frame_mode not in FRAME_MODES:
         raise ValueError(f"frame_mode must be one of {FRAME_MODES}, got {frame_mode!r}")
@@ -51,6 +52,8 @@ def run_eval(
     processed = 0
     detections_total = 0
     frames_with_detections = 0
+    rejected_total = 0
+    rejected_by_gate: Counter[str] = Counter()
 
     started = time.perf_counter()
     for index, frame in source.frames():
@@ -67,7 +70,11 @@ def run_eval(
         if result.detections:
             frames_with_detections += 1
             detections_total += len(result.detections)
-        if result.detections or frame_mode == "all":
+        rejected_total += len(result.rejected)
+        for rejected in result.rejected:
+            rejected_by_gate[rejected.gates[0] if rejected.gates else "unknown"] += 1
+        listed = result.detections or (frame_mode == "candidates" and result.rejected)
+        if listed or frame_mode == "all":
             frames_out.append(_frame_record(result))
     elapsed = time.perf_counter() - started
 
@@ -80,6 +87,9 @@ def run_eval(
             "frames": processed,
             "frames_with_detections": frames_with_detections,
             "detections": detections_total,
+            "rejected": rejected_total,
+            # Counted by the first gate each rejected candidate failed.
+            "rejected_by_gate": dict(sorted(rejected_by_gate.items())),
             "states": dict(sorted(states.items())),
             "frames_with_region": dict(sorted(region_frames.items())),
         },
@@ -116,6 +126,11 @@ def _frame_record(result: FrameResult) -> dict[str, Any]:
         ],
         "detections": [{"box": list(d.box), "metrics": d.metrics} for d in result.detections],
     }
+    if result.rejected:
+        record["rejected"] = [
+            {"box": list(r.box), "gates": list(r.gates), "metrics": r.metrics}
+            for r in result.rejected
+        ]
     if result.notes:
         record["notes"] = result.notes
     return record
