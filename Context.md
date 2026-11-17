@@ -244,3 +244,5 @@ Recent Additions:
 
 
 By tracking overlap of bounding boxes/detections, could build a better detector. 
+## TODO / Notes
+- Feed is ~30 unique frames/sec delivered doubled (each frame appears twice, ~60 fps). Skip duplicate frames (e.g. compare to previous frame / frame hash) before detection to roughly halve processing compute. Check knock-on effects on RCNN cycle, buffer sizing, and recording FPS.
