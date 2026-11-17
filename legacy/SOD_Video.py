@@ -65,9 +65,11 @@ class ThreadedVideoWriter:
             return False
             
         try:
-            # Pass frame directly - no need to copy since the frame is only used for writing
-            # and won't be modified by the writer thread
-            self.frame_queue.put(frame, block=False)
+            # Queue a copy. The display hands over the same buffer every frame and
+            # overwrites it for the next one; the writer thread runs behind (it starts
+            # with the whole pre-detection buffer queued), so without a copy it wrote
+            # newer frames in place of the ones it was given.
+            self.frame_queue.put(frame.copy(), block=False)
             return True
         except queue.Full:
             return False

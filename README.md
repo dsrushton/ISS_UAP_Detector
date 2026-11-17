@@ -25,6 +25,18 @@ uapd eval path/to/clip.mp4 --weights best_map_model.pth --out reports/clip.core.
 uapd eval path/to/clip.mp4 --pipeline legacy-v1 --weights best_map_model.pth --out reports/clip.v1.json
 ```
 
+### Demo: a planted test object
+
+This is a test, not a real capture. A 6-pixel grey dot was painted into a recorded clip of the live feed, drifting to the right for two seconds, along with a flash lasting one camera frame. The live app (`uapd run`) ignored the flash as a transient, confirmed the dot on the third frame it was seen, boxed it in red and recorded it.
+
+![Planted test dot being tracked](docs/demo/test_dot.gif)
+
+The left half is the detector's view of the space region; the right half is the frame with the region model's boxes. The red box drops out briefly where the dot crosses a brighter patch and stops qualifying.
+
+- [Full clip (MP4)](docs/demo/test_dot.mp4)
+- [Still frame](docs/demo/test_dot.jpg)
+- [The data file saved with the recording](docs/demo/test_dot.json)
+
 ## V1 (SpaceObjectDetector 1.1)
 
 The V1 application now lives in `legacy/`, with the July 2026 fixes applied (objects down to about 5 px are no longer discarded, the lens-flare guard works, saved metrics match what gated the detection). The unpatched original is on the `dev` branch. Run it from the repo root:
