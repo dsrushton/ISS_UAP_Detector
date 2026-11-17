@@ -346,7 +346,11 @@ class SpaceObjectDetectionSystem:
         
         if not self.stream:
             # Create stream manager only when needed
-            self.stream = StreamManager()
+            try:
+                self.stream = StreamManager()
+            except Exception as e:
+                print(f"\nCannot start YouTube restream: {e}")
+                return
             self.stream.set_software_encoding(True)  # Default to software encoding for maximum compatibility
             if self.logger:
                 self.stream.set_logger(self.logger)
@@ -736,12 +740,18 @@ class SpaceObjectDetectionSystem:
             
             # Initialize StreamManager with fixed 1920x1080 dimensions for padded output
             if self.stream is None:
-                # Always use 1920x1080 for stream dimensions to match our padded output
-                self.stream = StreamManager(frame_width=1920, frame_height=1080)
-                # Set the logger reference
-                if hasattr(self, 'logger') and self.logger:
-                    self.stream.set_logger(self.logger)
-                print("Stream manager initialized with fixed 1920x1080 dimensions")
+                # Restreaming needs YouTube API credentials. Detection does not,
+                # so carry on without the restream when they are missing.
+                try:
+                    # Always use 1920x1080 for stream dimensions to match our padded output
+                    self.stream = StreamManager(frame_width=1920, frame_height=1080)
+                    # Set the logger reference
+                    if hasattr(self, 'logger') and self.logger:
+                        self.stream.set_logger(self.logger)
+                    print("Stream manager initialized with fixed 1920x1080 dimensions")
+                except Exception as e:
+                    self.stream = None
+                    print(f"YouTube restream unavailable, continuing without it: {e}")
             
             print("Successfully connected to video source")
             return True

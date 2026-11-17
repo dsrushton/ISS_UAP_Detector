@@ -47,3 +47,6 @@ youtube_stream_id.json
 .ruff_cache/
 reports/
 Detections/
+
+# Local footage for uapd eval
+footage/

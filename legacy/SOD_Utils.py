@@ -32,7 +32,7 @@ def get_best_stream_url(youtube_url: str) -> str:
         
     try:
         result = subprocess.run(
-            ['yt-dlp', '-f', 'best', '-g', '--quiet', '--no-warnings', 
+            ['yt-dlp', '-f', 'bestvideo[height<=720]/best', '-g', '--quiet', '--no-warnings', 
              '--no-progress', '--no-check-certificates', youtube_url],
             capture_output=True, text=True, check=True,
             timeout=30  # Add timeout
