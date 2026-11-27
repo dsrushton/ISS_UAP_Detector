@@ -25,7 +25,13 @@ class RegionModel(Protocol):
 
 def load_region_model(weights: str | Path, config: RegionConfig) -> RegionModel:
     """The region model for a weights file, chosen by the kind in its manifest."""
-    from uapd.regions.manifest import KIND_RCNN, LEGACY_MANIFEST, ManifestError, read_manifest
+    from uapd.regions.manifest import (
+        KIND_RCNN,
+        KIND_YOLO_SEG,
+        LEGACY_MANIFEST,
+        ManifestError,
+        read_manifest,
+    )
 
     try:
         manifest = read_manifest(weights) or LEGACY_MANIFEST
@@ -35,4 +41,8 @@ def load_region_model(weights: str | Path, config: RegionConfig) -> RegionModel:
         from uapd.regions.rcnn import RcnnRegionModel
 
         return RcnnRegionModel(weights, config)
+    if manifest.kind == KIND_YOLO_SEG:
+        from uapd.regions.yolo_seg import YoloSegRegionModel
+
+        return YoloSegRegionModel(weights, config)
     raise PipelineError(f"{weights}: no region model for kind {manifest.kind!r}")

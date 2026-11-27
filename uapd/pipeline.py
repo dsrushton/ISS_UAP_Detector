@@ -30,6 +30,9 @@ class Region:
     label: str
     box: tuple[float, float, float, float]  # x1, y1, x2, y2
     score: float
+    # The region's shape as (x, y) points, from a segmentation model. Empty for a
+    # box model: the region is then its whole box.
+    outline: tuple[tuple[float, float], ...] = ()
 
 
 @dataclass(frozen=True)

@@ -74,6 +74,15 @@ def test_whole_folders_can_be_held_out(tmp_path):
     assert {it.image.parent.name for it in plan.val} == {"b"}
 
 
+def test_a_held_out_path_does_not_hold_out_other_folders_of_that_name(tmp_path):
+    make_csv_folder(tmp_path / "one" / "frames_5", frames=4)
+    make_csv_folder(tmp_path / "two" / "frames_5", frames=3)
+    by_path = plan_data([tmp_path], TrainConfig(val_folders=(str(tmp_path / "two" / "frames_5"),)))
+    assert (len(by_path.train), len(by_path.val)) == (4, 3)
+    by_name = plan_data([tmp_path], TrainConfig(val_folders=("frames_5",)))
+    assert (len(by_name.train), len(by_name.val)) == (0, 7)
+
+
 def test_a_path_without_labels_is_an_error(tmp_path):
     with pytest.raises(DataError, match="no labelled frames"):
         plan_data([tmp_path], TrainConfig())
@@ -196,3 +205,44 @@ def test_training_run_produces_weights_the_detector_loads(tmp_path):
     assert again["baseline"]["input"] == "rgb"
     assert again["baseline"]["val"]["images"] == 2
     assert "@uapd " in (tmp_path / "log.txt").read_text()
+
+    # With no improvement allowed for, training stops after the first epoch that
+    # fails to beat the one before it.
+    impatient = run_training(
+        config.replace(epochs=5, patience=1, min_improvement=10.0),
+        [tmp_path / "data"],
+        tmp_path / "models3",
+        quiet,
+        device="cpu",
+    )
+    assert len(impatient["epochs"]) == 2 and impatient["result"]["stopped_early"] is True
+
+
+def test_yolo_labels_use_the_outline_where_there_is_one(tmp_path):
+    from uapd.labels import KIND_POLYGON, Annotation, Sample
+    from uapd.labels.store import write_folder
+    from uapd.train.yolo_seg import label_lines
+
+    folder = make_csv_folder(tmp_path / "frames_1", frames=1)
+    for old in folder.glob("*.csv"):
+        old.unlink()
+    image = next(folder.glob("*.jpg"))
+    triangle = ((10.0, 10.0), (60.0, 10.0), (10.0, 50.0))
+    write_folder(
+        folder,
+        [
+            Sample(
+                image,
+                (
+                    Annotation("space", (10, 10, 60, 50), KIND_POLYGON, triangle),
+                    Annotation("lf", (20, 20, 40, 30)),
+                ),
+                group="g",
+            )
+        ],
+    )
+    item = plan_data([folder], TrainConfig(val_fraction=0.0)).train[0]
+    assert item.outlines == (triangle, ())
+    space, flare = label_lines(item, width=100, height=100)
+    assert space == "0 0.10000 0.10000 0.60000 0.10000 0.10000 0.50000"
+    assert flare.split()[0] == "3" and len(flare.split()) == 9  # a rectangle: four points

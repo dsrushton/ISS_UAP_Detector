@@ -13,7 +13,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from uapd.labels import FolderLabels, LabelError, Sample, find_label_folders, load_folder
+from uapd.labels import (
+    KIND_POLYGON,
+    FolderLabels,
+    LabelError,
+    Sample,
+    find_label_folders,
+    load_folder,
+)
 from uapd.train.config import TrainConfig
 
 Box = tuple[float, float, float, float]
@@ -30,6 +37,9 @@ class Item:
     image: Path
     boxes: tuple[Box, ...]
     labels: tuple[int, ...]
+    # Outline of each box as (x, y) points, or () where the label is only a box.
+    # Empty when no label of the image has an outline.
+    outlines: tuple[tuple[tuple[float, float], ...], ...] = ()
 
 
 @dataclass
@@ -64,9 +74,9 @@ def plan_data(paths: list[str | Path], config: TrainConfig) -> DataPlan:
         {alias.lower(): target for alias, target in config.aliases.items() if target in class_ids}
     )
 
-    val_names = {Path(f).name for f in config.val_folders} | {
-        str(Path(f)) for f in config.val_folders
-    }
+    # A bare name holds out every folder of that name; a path holds out that folder.
+    val_names = {f for f in config.val_folders if Path(f).name == f}
+    val_paths = {Path(f).resolve() for f in config.val_folders if Path(f).name != f}
     plan = DataPlan(classes=config.classes)
     boxes = {"train": Counter(), "val": Counter()}
     unknown: Counter[str] = Counter()
@@ -86,9 +96,11 @@ def plan_data(paths: list[str | Path], config: TrainConfig) -> DataPlan:
             bad_boxes += bad
             items.append(item)
             digest.update(f"{sample.image.name}:{item.boxes}:{item.labels}\n".encode())
+            if item.outlines:
+                digest.update(f"{item.outlines}\n".encode())
 
         if config.val_folders:
-            held_out = folder.name in val_names or str(folder) in val_names
+            held_out = folder.name in val_names or folder.resolve() in val_paths
             n_val = len(items) if held_out else 0
         else:
             n_val = math.floor(len(items) * config.val_fraction)
@@ -135,7 +147,7 @@ def plan_data(paths: list[str | Path], config: TrainConfig) -> DataPlan:
 def _item(
     sample: Sample, lookup: dict[str, str], class_ids: dict[str, int]
 ) -> tuple[Item, list[str], int]:
-    boxes, labels, dropped, bad = [], [], [], 0
+    boxes, labels, outlines, dropped, bad = [], [], [], [], 0
     for annotation in sample.annotations:
         name = lookup.get(annotation.label.lower())
         if name is None:
@@ -148,7 +160,10 @@ def _item(
             continue
         boxes.append((x1, y1, x2, y2))
         labels.append(class_ids[name])
-    return Item(sample.image, tuple(boxes), tuple(labels)), dropped, bad
+        outlines.append(annotation.points if annotation.kind == KIND_POLYGON else ())
+    if not any(outlines):
+        outlines = []
+    return Item(sample.image, tuple(boxes), tuple(labels), tuple(outlines)), dropped, bad
 
 
 def _image_size(path: Path) -> list[int] | None:

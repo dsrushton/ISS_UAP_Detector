@@ -76,6 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--init", help="coco, none, or a weights file to continue from")
     tr.add_argument("--val-fraction", type=float)
     tr.add_argument(
+        "--patience",
+        type=int,
+        help="stop when the validation score has not improved for this many epochs (0 = never)",
+    )
+    tr.add_argument(
         "--baseline", help="weights to score on the same validation images, for comparison"
     )
     tr.add_argument("--device", help="cuda or cpu (default: cuda when available)")
@@ -85,6 +90,27 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument(
         "--progress-json", action="store_true", help="also print progress events as JSON lines"
     )
+
+    mk = sub.add_parser(
+        "masks",
+        help="outline labelled boxes with a mask model; writes a copy of the folders "
+        "with labels.json and a contact sheet each",
+    )
+    mk.add_argument(
+        "--data",
+        action="append",
+        default=[],
+        metavar="FOLDER",
+        help="folder of labelled frames, or a folder to search for them (repeatable)",
+    )
+    mk.add_argument("--out", required=True, help="where the outlined copies go")
+    mk.add_argument(
+        "--classes", nargs="+", metavar="NAME", help="classes to outline (default: space earth iss)"
+    )
+    mk.add_argument("--model", help="mask model weights (default: sam2.1_b.pt)")
+    mk.add_argument("--device", help="cuda or cpu (default: cuda when available)")
+    mk.add_argument("--limit", type=int, help="only the first N images of each folder, for a trial")
+    mk.add_argument("--force", action="store_true", help="redo folders that are already done")
 
     sub.add_parser("app", help="open the point-and-click app")
 
@@ -105,6 +131,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_run(args)
         if args.command == "train":
             return _cmd_train(args)
+        if args.command == "masks":
+            return _cmd_masks(args)
         if args.command == "app":
             from uapd.app import main as app_main
 
@@ -176,6 +204,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
         "learning_rate": args.lr,
         "init": args.init,
         "val_fraction": args.val_fraction,
+        "patience": args.patience,
     }
     config = config.replace(**{k: v for k, v in flags.items() if v is not None})
     if not args.data:
@@ -194,6 +223,34 @@ def _cmd_train(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         reporter.log("Stopped. The run folder keeps the epochs that finished.")
         return 130
+    return 0
+
+
+def _cmd_masks(args: argparse.Namespace) -> int:
+    from uapd.labels import automask
+    from uapd.train.data import resolve_folders
+
+    if not args.data:
+        raise ValueError("give at least one --data folder")
+    settings = automask.MaskSettings()
+    if args.classes:
+        settings = automask.MaskSettings(mask_classes=tuple(args.classes))
+    model = args.model or automask.DEFAULT_MODEL
+    results = automask.build_masks(
+        resolve_folders(args.data),
+        args.out,
+        automask.sam_masker(model, args.device),
+        settings,
+        source=f"model:{model}",
+        force=args.force,
+        limit=args.limit,
+    )
+    totals = automask.summary(results)
+    print(
+        f"\n{totals['images']} images in {totals['folders']} folders: {totals['outlined']} boxes "
+        f"outlined, {totals['kept_boxes']} left as boxes. "
+        f"Contact sheets: {args.out}/{automask.REVIEW_FOLDER}"
+    )
     return 0
 
 

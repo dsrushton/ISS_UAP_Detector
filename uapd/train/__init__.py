@@ -83,8 +83,15 @@ def _rcnn_boxes(job: TrainJob) -> dict[str, Any]:
     return train_rcnn(job)
 
 
+def _yolo_seg(job: TrainJob) -> dict[str, Any]:
+    from uapd.train.yolo_seg import train_yolo_seg
+
+    return train_yolo_seg(job)
+
+
 TRAINERS: dict[str, Callable[[TrainJob], dict[str, Any]]] = {
     "rcnn-boxes": _rcnn_boxes,
+    "yolo-seg": _yolo_seg,
 }
 
 

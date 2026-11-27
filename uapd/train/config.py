@@ -41,11 +41,22 @@ class TrainConfig:
     # same picture on both sides and make every score look better than it is.
     val_fraction: float = 0.2
     # Folders listed here are held out whole instead; the others are all training.
+    # A bare name ("frames_5") matches every folder of that name; a path matches
+    # that one folder.
     val_folders: tuple[str, ...] = ()
+    # Stop when the validation score has not risen by more than min_improvement
+    # for this many epochs in a row (0 = always run every epoch). best.pth is the
+    # best epoch either way.
+    patience: int = 0
+    min_improvement: float = 0.001
 
     # What training starts from: "coco" (torchvision's pretrained detector,
     # downloaded once), "none", or the path of a weights file to continue from.
     init: str = "coco"
+    # yolo-seg only: the pretrained model training starts from (init = "coco"),
+    # and the longer side frames are resized to.
+    yolo_model: str = "yolo11s-seg.pt"
+    image_size: int = 960
     trainable_backbone_layers: int = 3
     min_size: int = 800
     max_size: int = 1333
@@ -121,6 +132,9 @@ class TrainConfig:
         check(0.0 <= self.val_fraction < 1.0, "val_fraction: must be 0 or more and below 1")
         check(self.optimizer in ("sgd", "adam"), "optimizer: sgd or adam")
         check(self.epochs >= 1, "epochs: at least 1")
+        check(self.patience >= 0, "patience: 0 or more")
+        check(self.image_size >= 32, "image_size: at least 32")
+        check(self.min_improvement >= 0, "min_improvement: 0 or more")
         check(self.batch_size >= 1, "batch_size: at least 1")
         check(self.learning_rate > 0, "learning_rate: must be above 0")
         check(0.0 < self.lr_drop_at <= 1.0, "lr_drop_at: above 0, at most 1")

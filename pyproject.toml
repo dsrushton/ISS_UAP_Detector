@@ -20,6 +20,10 @@ torch = [
     "torchvision>=0.15",
     "Pillow>=8.0",
 ]
+# Segmentation models and the SAM 2 box outliner (uapd masks). AGPL-3.0.
+yolo = [
+    "ultralytics>=8.4",
+]
 dev = [
     "pytest>=8",
     "ruff>=0.5",

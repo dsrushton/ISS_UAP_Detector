@@ -203,3 +203,14 @@ def test_frame_must_match_the_search_area():
     area = build_search_area(SHAPE, WHOLE_FRAME)
     with pytest.raises(ValueError, match="search area"):
         find_candidates(np.zeros((100, 100, 3), np.uint8), area, CandidateConfig())
+
+
+def test_search_area_follows_outlines_and_leaves_out_other_regions():
+    triangle = [(0, 0), (100, 0), (0, 100)]
+    area = build_search_area(
+        (120, 160), [(120, 0, 160, 40)], [triangle], [[(0, 0), (30, 0), (0, 30)]]
+    )
+    assert area.mask[10, 130] == 255  # the box
+    assert area.mask[50, 20] == 255  # inside the outline
+    assert area.mask[90, 90] == 0  # inside the outline's bounding box, outside the outline
+    assert area.mask[5, 5] == 0  # another region's shape, taken out of space

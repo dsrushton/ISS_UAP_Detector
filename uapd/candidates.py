@@ -85,12 +85,28 @@ class CandidateSet:
         return self.found > len(self.candidates) + self.faint
 
 
-def build_search_area(shape: tuple[int, int], space_boxes: Sequence[Box]) -> SearchArea:
-    """Combine the space boxes into one mask for a frame of ``shape`` (height, width)."""
+Outline = Sequence[tuple[float, float]]
+
+
+def build_search_area(
+    shape: tuple[int, int],
+    space_boxes: Sequence[Box],
+    space_outlines: Sequence[Outline] = (),
+    not_space: Sequence[Outline] = (),
+) -> SearchArea:
+    """Combine the space regions into one mask for a frame of ``shape`` (height, width).
+
+    Space is the boxes plus the outlines, less the ``not_space`` outlines (the
+    shapes of other regions, which a space outline can enclose).
+    """
     height, width = shape
     mask = np.zeros((height, width), np.uint8)
     for x1, y1, x2, y2 in space_boxes:
         cv2.rectangle(mask, (int(x1), int(y1)), (int(x2), int(y2)), 255, -1)
+    for points in space_outlines:
+        cv2.fillPoly(mask, [np.array(points, np.int32)], 255)
+    for points in not_space:
+        cv2.fillPoly(mask, [np.array(points, np.int32)], 0)
 
     # Pad with non-space so the frame edge counts as a border.
     padded = cv2.copyMakeBorder(mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)

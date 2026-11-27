@@ -44,6 +44,10 @@ from uapd.regions import RegionModel
 from uapd.regions.schedule import BackgroundRegions, SyncRegions
 from uapd.tracking import Tracker
 
+# Regions whose outline is taken out of the space mask: a space outline is an
+# outer edge only, and can enclose part of the station or the Earth's limb.
+NOT_SPACE = ("earth", "iss")
+
 
 class CorePipeline:
     name = "core"
@@ -108,8 +112,13 @@ class CorePipeline:
         resized = self.search_area is not None and self.search_area.mask.shape != shape
         regions, source = self._schedule.update(cropped, count, force=refresh_regions or resized)
         if self.search_area is None or source != self._area_source:
-            space = [r.box for r in regions if r.label == "space"]
-            self.search_area = build_search_area(shape, space)
+            space = [r for r in regions if r.label == "space"]
+            self.search_area = build_search_area(
+                shape,
+                [r.box for r in space if not r.outline],
+                [r.outline for r in space if r.outline],
+                [r.outline for r in regions if r.label in NOT_SPACE and r.outline],
+            )
             self._area_source = source
 
         regions = list(regions)

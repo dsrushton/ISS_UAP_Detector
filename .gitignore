@@ -53,3 +53,6 @@ footage/
 
 # Training runs (uapd train)
 models/
+
+# Local training data built by uapd masks
+data/

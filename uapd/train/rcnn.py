@@ -196,6 +196,8 @@ def train_rcnn(job: TrainJob) -> dict[str, Any]:
 
     last, best = job.run_dir / "last.pth", job.run_dir / "best.pth"
     best_map, best_epoch = -1.0, 0
+    # Early stopping: epochs since the score last rose by more than min_improvement.
+    reference, stale, stopped_early = -1.0, 0, False
     for epoch in range(1, config.epochs + 1):
         started = time.perf_counter()
         loss = _train_epoch(
@@ -237,10 +239,24 @@ def train_rcnn(job: TrainJob) -> dict[str, Any]:
         )
         report.event("epoch", epochs=config.epochs, **entry)
 
+        if value is not None and config.patience > 0:
+            if reference < 0 or value > reference + config.min_improvement:
+                reference, stale = value, 0
+            else:
+                stale += 1
+            if stale >= config.patience and epoch < config.epochs:
+                stopped_early = True
+                report.log(
+                    f"Stopping early: the validation score has not risen by more than "
+                    f"{config.min_improvement} for {stale} epochs."
+                )
+                break
+
     result = {
         "best_weights": str(best),
         "best_epoch": best_epoch,
         "best_map": best_map if best_map >= 0 else None,
+        "stopped_early": stopped_early,
         "baseline_map": job.run.get("baseline", {}).get("val", {}).get("map"),
     }
     report.log(f"\nBest model: {best} (epoch {best_epoch}, mAP {result['best_map']})")

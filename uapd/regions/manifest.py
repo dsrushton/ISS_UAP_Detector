@@ -18,6 +18,7 @@ from typing import Any
 MANIFEST_SCHEMA_VERSION = 1
 
 KIND_RCNN = "faster-rcnn-resnet50-fpn"
+KIND_YOLO_SEG = "yolo-seg"
 
 # How a cropped BGR frame becomes the model's input.
 # "rgb": channels reversed to RGB, values 0-1. The torchvision model normalises
@@ -29,8 +30,11 @@ KIND_RCNN = "faster-rcnn-resnet50-fpn"
 #   normalisation, but with the channels left in BGR.
 INPUT_RGB = "rgb"
 INPUT_RGB_NORMALIZED = "rgb-normalized"
+# "bgr-frame": the cropped BGR frame as it is; the model's own code prepares it
+#   (the ultralytics models).
 INPUT_LEGACY_V1 = "legacy-v1"
-INPUT_MODES = (INPUT_RGB, INPUT_RGB_NORMALIZED, INPUT_LEGACY_V1)
+INPUT_BGR_FRAME = "bgr-frame"
+INPUT_MODES = (INPUT_RGB, INPUT_RGB_NORMALIZED, INPUT_LEGACY_V1, INPUT_BGR_FRAME)
 
 LEGACY_CLASSES = ("background", "space", "earth", "iss", "lf", "td", "sun", "nofeed", "panel")
 
