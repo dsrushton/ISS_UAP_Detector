@@ -58,6 +58,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--profile", help="TOML profile to apply over the defaults")
 
+    tr = sub.add_parser(
+        "train", help="train a region model on labelled frames; writes a run folder"
+    )
+    tr.add_argument(
+        "--data",
+        action="append",
+        default=[],
+        metavar="FOLDER",
+        help="folder of labelled frames, or a folder to search for them (repeatable)",
+    )
+    tr.add_argument("--config", help="TOML file of training settings")
+    tr.add_argument("--out", default="models", help="where run folders go (default: models)")
+    tr.add_argument("--epochs", type=int)
+    tr.add_argument("--batch-size", type=int)
+    tr.add_argument("--lr", type=float, help="learning rate")
+    tr.add_argument("--init", help="coco, none, or a weights file to continue from")
+    tr.add_argument("--val-fraction", type=float)
+    tr.add_argument(
+        "--baseline", help="weights to score on the same validation images, for comparison"
+    )
+    tr.add_argument("--device", help="cuda or cpu (default: cuda when available)")
+    tr.add_argument(
+        "--check", action="store_true", help="report what would be trained on, then stop"
+    )
+    tr.add_argument(
+        "--progress-json", action="store_true", help="also print progress events as JSON lines"
+    )
+
+    sub.add_parser("app", help="open the point-and-click app")
+
     cfg = sub.add_parser("config", help="print the effective V2 configuration as JSON")
     cfg.add_argument("--profile", help="TOML profile to apply over the defaults")
 
@@ -73,7 +103,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_config(args)
         if args.command == "run":
             return _cmd_run(args)
-    except (PipelineError, SourceError, ConfigError, ValueError) as exc:
+        if args.command == "train":
+            return _cmd_train(args)
+        if args.command == "app":
+            from uapd.app import main as app_main
+
+            return app_main()
+    except (PipelineError, SourceError, ConfigError, ValueError, RuntimeError) as exc:
         print(f"uapd: error: {exc}", file=sys.stderr)
         return 2
     return 0
@@ -126,6 +162,39 @@ def _cmd_run(args: argparse.Namespace) -> int:
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(0)
+
+
+def _cmd_train(args: argparse.Namespace) -> int:
+    from uapd.train import Reporter, run_training
+    from uapd.train.config import TrainConfig
+    from uapd.train.data import format_report, plan_data
+
+    config = TrainConfig.load(args.config) if args.config else TrainConfig()
+    flags = {
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "learning_rate": args.lr,
+        "init": args.init,
+        "val_fraction": args.val_fraction,
+    }
+    config = config.replace(**{k: v for k, v in flags.items() if v is not None})
+    if not args.data:
+        raise ValueError("give at least one --data folder")
+
+    reporter = Reporter(machine=args.progress_json)
+    if args.check:
+        plan = plan_data(args.data, config)
+        reporter.log(format_report(plan.report))
+        reporter.event("check", **plan.report)
+        return 0
+    try:
+        run_training(
+            config, args.data, args.out, reporter, device=args.device, baseline=args.baseline
+        )
+    except KeyboardInterrupt:
+        reporter.log("Stopped. The run folder keeps the epochs that finished.")
+        return 130
+    return 0
 
 
 def _cmd_config(args: argparse.Namespace) -> int:

@@ -24,6 +24,10 @@ Three rules from the plan that govern every change:
   - `events.py` — the data file written beside each recording
   - `runtime/live.py` — the live app: V2 detection behind the legacy window, recorder and restream
   - `eval/headless.py` — the headless harness
+  - `regions/manifest.py` — the JSON file beside a weights file: network kind, classes, input preparation, training record
+  - `labels/` — the contract between labelling and training: `Sample`/`Annotation`, the native `labels.json` format and the reader for the original notebook's CSV format
+  - `train/` — training. `data.py` (folders → class ids, split, report) and `metrics.py` need no PyTorch; `rcnn.py` is the Faster R-CNN box trainer; `__init__.py` holds the trainer registry and the run folder
+  - `app/` — the point-and-click app. `window.py` is Tk; `jobs.py` builds command lines and runs each branch as a child process
   - `cli.py` — the `uapd` command
 - `legacy/` — the V1 live app, with the July 2026 patch set applied (scale fix, 3-point contour minimum, working lens-flare guard, truthful `area`, dead-code cleanup). It is the app that runs day to day until V2 has a live runtime, and the baseline `uapd eval --pipeline legacy-v1` compares against. The original unpatched V1 is on `dev`. New work still goes in `uapd/`.
 - `tests/` — pytest suite
@@ -40,13 +44,28 @@ uapd eval path/to/clip.mp4 --pipeline legacy-v1 --weights best_map_model.pth --o
 uapd config
 uapd run                         # V2 live app, run from the repo root (q quits, s restreams, t test frames)
 uapd run path/to/clip.mp4        # the same on a recorded clip
+uapd app                         # point-and-click app: Detect / Broadcast, Relabel, Retrain
+uapd train --data path/to/frames --check             # report what would be trained on
+uapd train --data path/to/frames --baseline best_map_model.pth   # writes models/<run>/best.pth + best.json
 python legacy/SOD_Main.py        # V1 live app, run from the repo root
 ```
 
 `best_map_model.pth` is not in the repo; the download link is in `README.md`.
 
+## Module boundaries
+
+The three branches of the app stay separable. To work on one, read only its folder and the contract it shares:
+
+- **Detect / Broadcast**: `runtime/`, `pipelines/`, `candidates.py`, `tracking.py`, `regions/`. Knows nothing about training.
+- **Retrain**: `train/`, plus `labels/` (what it reads) and `regions/manifest.py` (what it writes). It imports `regions/rcnn.py` only for `build_model` and `model_input`, so training and detection prepare frames with the same code.
+- **Relabel**: not built. It will write `labels/` formats and event verdicts; see `docs/V2_PLAN.md` section 10.
+- **App**: `app/` starts the others as `python -m uapd ...` processes and reads their output. It must not import them.
+
 ## Conventions
 
+- Weights trained here carry a manifest (`best.pth` + `best.json`). The detector prepares frames as the manifest says. Weights with no manifest are the V1 weights and get V1's input (BGR, normalised twice); `regions.input` in a profile overrides this. New model types add a manifest `kind`, a loader in `regions.load_region_model` and a trainer in `train.TRAINERS`.
+- A trained model is a challenger. Do not make anything switch the detector to it automatically; that is the gate's job.
+- Validation frames are split off by position within a folder, never at random: neighbouring video frames are near copies.
 - Configuration comes from a `Config` object passed in. Never read settings at import time and never add module-level mutable settings. (V1's `from SOD_Constants import X` froze values at import, so live edits never reached half the system.)
 - All pixel measurements are in full-resolution pixels of the cropped frame. If an image is downscaled for speed, scale measurements back before comparing or storing them.
 - Every stored measurement must be the exact value that was used to make the decision.

@@ -50,3 +50,6 @@ Detections/
 
 # Local footage for uapd eval
 footage/
+
+# Training runs (uapd train)
+models/

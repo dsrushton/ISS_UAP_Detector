@@ -202,3 +202,41 @@ Defaults are chosen so work can start; change any of them before M1.
 - Existing `Detections/` captures, to seed the hard-negative stockpile through the M3 importer
 - The patched files, `CLAUDE.md` and `TASKS.md` from the earlier discussion, if you want them folded in; none of them are in the repo
 - A GPU machine for anything that runs the region model; this plan was written without running V1
+
+## 10. The app, training and labelling (added November 2026)
+
+`uapd app` opens a window with three branches. Each branch is a separate process started from the window, so they share only files and command lines.
+
+| Branch | Runs | State |
+|---|---|---|
+| Detect / Broadcast | `uapd run` | Built (M2 live app) |
+| Relabel captures | — | Not built; contract below |
+| Retrain | `uapd train` | Built for the region model with boxes |
+
+This replaces the FastAPI viewer of section 3 as the planned front end unless clip review turns out to need a browser.
+
+### Training
+
+- `uapd train --data <folders>` writes `models/<date>-<kind>/` with `run.json`, `last.pth` and `best.pth`, each with a manifest (`.json`).
+- First trainer: `rcnn-boxes`, the original notebook rebuilt. Notebook faults removed: `sun` was class 0 (background); the random split leaked near-identical frames into validation; the "accuracy" ignored box position; saved weights recorded nothing about themselves.
+- Colour order. The notebook trained on RGB. The V1 app feeds the model BGR and normalises twice. So the mismatch is on the detection side. New weights declare `input: rgb` in their manifest and the detector follows it; `best_map_model.pth` has no manifest and keeps V1's input, because that is what the thresholds were tuned on. To see whether it does better on the input it was trained with, run `uapd eval` with a profile that sets `regions.input = "rgb"`. The script that trained `best_map_model.pth` is not in either repository (its 8 classes differ from the notebook's 10), so this has not been confirmed for that file.
+- Score: mAP at IoU 0.5 on validation frames taken from the end of each folder. `--baseline` scores existing weights on the same frames. That comparison is not the gate of section 6 and the baseline may have seen those frames in training.
+- Adding a model type (a segmentation model, say): a trainer in `uapd.train.TRAINERS`, a manifest `kind`, a loader in `uapd.regions.load_region_model`. The run folder, CLI and app do not change.
+
+### Labelling contract
+
+Trainers read `uapd.labels.Sample` objects: an image, a clip group, and annotations. An annotation has a label, a bounding box and a `kind` (`box`, `polygon`, `mask`); polygons and masks also carry a box, so box trainers can use data labelled for segmentation.
+
+Two kinds of label, kept apart:
+
+1. **Event verdicts** (rejector data): one verdict per recording from the taxonomy in section 5, stored beside the event's data file. This is the hard-negative stockpile for the learned filter (M5). It never trains the region model.
+2. **Frame annotations** (region-model data): boxes now, masks later, stored as `labels.json` per folder of frames. `uapd train` already reads this, and the notebook's CSV folders.
+
+What Relabel needs to do, in build order:
+
+1. List recordings in `Detections/AVI` with their data files; play a clip with the detector's boxes drawn from the data file.
+2. One-key verdict per event; write it to a verdict file beside the clip (and to SQLite when the index exists).
+3. Export chosen frames of a clip to a frame folder, pre-filled with the current model's regions (`source: "model:<hash>"`), for correction by hand (`source: "human"`). Only human-checked frames are used for training.
+4. Box editing on a frame. Mask editing stays outside the app (SAM2 in CVAT or Label Studio) with an importer into `labels.json`.
+
+Open questions for Relabel: whether frames exported from recordings are cropped the same way as the old training frames (`uapd train --check` reports frame sizes per folder); what to do with the notebook's `e_t` and `unknown` classes, which the current 8-class model does not have and which are left out of training by default.

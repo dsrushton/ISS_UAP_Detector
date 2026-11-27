@@ -14,9 +14,16 @@ What exists so far (milestones M0 and M1):
 - A temporal layer: detections are linked into tracks, and only a track seen on three frames counts, which drops one-frame flashes such as cosmic ray hits
 - `uapd run`, the live app: V2 detection behind the existing window, recording and YouTube restream, writing a JSON data file beside each recording
 
+- `uapd app`, a point-and-click window with three branches: Detect / Broadcast, Relabel captures (not built yet) and Retrain
+- `uapd train`, which trains the region model on labelled frames and saves each model with a manifest the detector reads
+
 ```bash
 uv venv && uv pip install -e '.[torch,dev]'
 pytest
+# Point-and-click app (run from the repo root)
+uapd app
+# Train on labelled frames; the run goes to models/<date>-rcnn-boxes/
+uapd train --data path/to/labelled/frames --baseline best_map_model.pth
 # V2 live app (run from the repo root)
 uapd run
 # V2 core pipeline

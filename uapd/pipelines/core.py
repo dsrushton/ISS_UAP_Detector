@@ -165,9 +165,9 @@ def build_core_pipeline(
     config: Config | None = None,
     background: bool = False,
 ) -> CorePipeline:
-    """The core pipeline with the V1 Faster R-CNN as its region model."""
-    from uapd.regions.rcnn import RcnnRegionModel
+    """The core pipeline with the region model in ``weights``."""
+    from uapd.regions import load_region_model
 
     config = config or Config()
-    model = RcnnRegionModel(weights, config.regions)
+    model = load_region_model(weights, config.regions)
     return CorePipeline(config, model, background=background)

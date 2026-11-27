@@ -42,6 +42,10 @@ class RegionConfig:
     max_boxes: int = 10
     darkness_area_threshold: float = 0.25
     max_lens_flares: int = 3
+    # How frames are prepared for the region model: "auto" follows the model's
+    # manifest (weights with no manifest are the V1 weights and get V1's input).
+    # "rgb" or "legacy-v1" overrides it, e.g. to try the V1 weights on RGB input.
+    input: str = "auto"
     thresholds: dict[str, float] = field(
         default_factory=lambda: {
             "space": 0.80,
