@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pytest
 
-from tests.test_labels import make_csv_folder
+from tests.test_labels import make_csv_folder, make_xml_folder
 from uapd.cli import main
 from uapd.config import ConfigError, RegionConfig
 from uapd.train.config import TrainConfig
@@ -51,6 +51,19 @@ def test_unknown_labels_and_bad_boxes_are_counted_not_trained(tmp_path):
     assert plan.report["dropped_bad_boxes"] == 5
     with pytest.raises(DataError, match=r"e_t \(5\)"):
         plan_data([tmp_path / "f"], TrainConfig(unknown_labels="error"))
+
+
+def test_january_xml_labels_need_no_mapping_and_moon_is_left_out(tmp_path):
+    objects = [("space", 0, 0, 160, 60), ("panel", 5, 5, 40, 30), ("moon", 100, 10, 110, 20)]
+    make_xml_folder(tmp_path / "sample_1" / "frames_1", frames=5, objects=objects)
+    make_csv_folder(tmp_path / "old" / "frames_1", frames=5)
+    plan = plan_data([tmp_path], TrainConfig())
+    by_folder = {f["folder"]: f["format"] for f in plan.report["folders"]}
+    assert sorted(by_folder.values()) == ["csv-frames", "voc-xml (2ndTrainingXMLs)"]
+    xml_item = next(it for it in plan.train if it.image.name == "00000.jpg")
+    assert xml_item.labels == (1, 8)  # space, panel
+    assert plan.report["dropped_unknown_labels"] == {"moon": 5}
+    assert any("different label sets" in w for w in plan.report["warnings"])
 
 
 def test_whole_folders_can_be_held_out(tmp_path):
@@ -108,6 +121,34 @@ def test_model_input_modes():
     legacy = model_input(bgr, "legacy-v1")
     # V1's input: blue stays in the first channel and is normalised with the red statistics.
     assert legacy[0, 0, 0] == pytest.approx((1 - IMAGENET_MEAN[0]) / IMAGENET_STD[0])
+    # As best_map_model.pth was trained: RGB first, then the same extra normalisation.
+    trained = model_input(bgr, "rgb-normalized")
+    assert trained[2, 0, 0] == pytest.approx((1 - IMAGENET_MEAN[2]) / IMAGENET_STD[2])
+    assert trained[0, 0, 0] == pytest.approx((0 - IMAGENET_MEAN[0]) / IMAGENET_STD[0])
+
+
+def test_training_frames_flip_with_their_boxes(tmp_path):
+    torch = pytest.importorskip("torch")
+    import cv2
+
+    from uapd.train.data import Item
+    from uapd.train.rcnn import Frames
+
+    image = np.zeros((40, 60, 3), np.uint8)
+    image[5:15, 10:30] = 255  # a white block, top left
+    cv2.imwrite(str(tmp_path / "a.png"), image)
+    item = Item(tmp_path / "a.png", ((10.0, 5.0, 30.0, 15.0),), (3,))
+    plain, target = Frames([item])[0]
+    assert target["boxes"].tolist() == [[10.0, 5.0, 30.0, 15.0]]
+    seen = set()
+    torch.manual_seed(0)
+    for _ in range(40):
+        flipped, target = Frames([item], hflip=True, vflip=True)[0]
+        x1, y1, x2, y2 = (int(v) for v in target["boxes"][0])
+        seen.add((x1, y1, x2, y2))
+        assert flipped[:, y1:y2, x1:x2].min() == 1.0  # the box still covers the block
+        assert flipped.sum() == plain.sum()
+    assert seen == {(10, 5, 30, 15), (30, 5, 50, 15), (10, 25, 30, 35), (30, 25, 50, 35)}
 
 
 def test_training_run_produces_weights_the_detector_loads(tmp_path):

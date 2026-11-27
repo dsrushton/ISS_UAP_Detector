@@ -44,7 +44,8 @@ class RegionConfig:
     max_lens_flares: int = 3
     # How frames are prepared for the region model: "auto" follows the model's
     # manifest (weights with no manifest are the V1 weights and get V1's input).
-    # "rgb" or "legacy-v1" overrides it, e.g. to try the V1 weights on RGB input.
+    # Naming a mode overrides it: "rgb-normalized" runs the V1 weights on the input
+    # they were trained on. Modes are listed in uapd/regions/manifest.py.
     input: str = "auto"
     thresholds: dict[str, float] = field(
         default_factory=lambda: {

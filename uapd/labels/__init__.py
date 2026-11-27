@@ -12,8 +12,11 @@ Folder formats (``load_folder`` picks by what the folder contains):
 
 * ``labels.json`` - the native format, written by ``write_folder`` and, later, by
   the relabel tool. See ``uapd.labels.store``.
-* ``bboxes_<n>.csv`` beside ``<name>_<n>.jpg`` - the format of the original
-  training notebook. See ``uapd.labels.csv_frames``.
+* ``<name>.xml`` per frame, from labelImg - what ``best_map_model.pth`` was
+  trained on (January 2025). See ``uapd.labels.voc_xml``.
+* ``bboxes_<n>.csv`` beside ``<name>_<n>.jpg`` - the older label set of the
+  August 2024 notebook. Used only when a folder has neither of the above.
+  See ``uapd.labels.csv_frames``.
 
 All coordinates are pixels of the image file. Label names are stored as written;
 mapping them to a model's classes is the trainer's job.
@@ -70,13 +73,15 @@ class FolderLabels:
 
 def load_folder(directory: str | Path) -> FolderLabels:
     """The labelled images of one folder, sorted by file name."""
-    from uapd.labels import csv_frames, store
+    from uapd.labels import csv_frames, store, voc_xml
 
     directory = Path(directory)
     if not directory.is_dir():
         raise LabelError(f"not a folder: {directory}")
     if (directory / store.LABELS_FILE).is_file():
         return store.read_folder(directory)
+    if voc_xml.has_labels(directory):
+        return voc_xml.read_folder(directory)
     if csv_frames.has_labels(directory):
         return csv_frames.read_folder(directory)
     raise LabelError(f"no labels found in {directory}")
@@ -84,14 +89,18 @@ def load_folder(directory: str | Path) -> FolderLabels:
 
 def find_label_folders(root: str | Path) -> list[Path]:
     """``root`` if it holds labels, otherwise every folder below it that does."""
-    from uapd.labels import csv_frames, store
+    from uapd.labels import csv_frames, store, voc_xml
 
     root = Path(root)
     if not root.is_dir():
         raise LabelError(f"not a folder: {root}")
 
     def labelled(directory: Path) -> bool:
-        return (directory / store.LABELS_FILE).is_file() or csv_frames.has_labels(directory)
+        return (
+            (directory / store.LABELS_FILE).is_file()
+            or voc_xml.has_labels(directory)
+            or csv_frames.has_labels(directory)
+        )
 
     if labelled(root):
         return [root]

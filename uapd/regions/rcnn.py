@@ -20,6 +20,7 @@ from uapd.regions.manifest import (
     INPUT_LEGACY_V1,
     INPUT_MODES,
     INPUT_RGB,
+    INPUT_RGB_NORMALIZED,
     KIND_RCNN,
     LEGACY_CLASSES,
     LEGACY_MANIFEST,
@@ -64,7 +65,7 @@ class RcnnRegionModel:
         self.input = self.manifest.input if config.input == "auto" else config.input
         if self.input not in INPUT_MODES:
             raise PipelineError(
-                f"regions.input must be auto, {' or '.join(INPUT_MODES)}; got {config.input!r}"
+                f"regions.input must be auto, {', '.join(INPUT_MODES)}; got {config.input!r}"
             )
 
         self._torch = torch
@@ -119,9 +120,12 @@ def model_input(image: Any, mode: str) -> Any:
     """
     if mode == INPUT_RGB:
         return image.flip(0)
-    if mode == INPUT_LEGACY_V1:
-        # V1's preparation, kept exactly: channels stay in BGR order and the image
-        # is normalised here as well as inside the torchvision model.
+    if mode in (INPUT_LEGACY_V1, INPUT_RGB_NORMALIZED):
+        # Normalised here as well as inside the torchvision model, as the V1 weights
+        # were trained. V1's app also leaves the channels in BGR order (legacy-v1);
+        # the training script had them in RGB (rgb-normalized).
+        if mode == INPUT_RGB_NORMALIZED:
+            image = image.flip(0)
         mean = image.new_tensor(IMAGENET_MEAN).view(3, 1, 1)
         std = image.new_tensor(IMAGENET_STD).view(3, 1, 1)
         return (image - mean) / std

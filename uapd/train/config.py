@@ -13,8 +13,8 @@ from typing import Any
 from uapd.config import ConfigError, _coerce
 from uapd.regions.manifest import LEGACY_CLASSES
 
-# Label names used by the original notebook's data, mapped to the names the
-# pipeline uses. Matching ignores case.
+# Label names in the August 2024 CSV label set, mapped to the names the pipeline
+# uses. Matching ignores case. The January 2025 XML labels need no mapping.
 NOTEBOOK_ALIASES = {
     "Earth_broad": "earth",
     "panels": "panel",
@@ -50,17 +50,25 @@ class TrainConfig:
     min_size: int = 800
     max_size: int = 1333
 
-    epochs: int = 10
-    batch_size: int = 4
-    optimizer: str = "sgd"  # or "adam", which the notebook used with 0.001
-    learning_rate: float = 0.005
+    # Defaults below are the recipe that produced best_map_model.pth (January 2025):
+    # Adam at 0.0001, batch 8, mixed precision, gradients clipped at 1.0, random
+    # horizontal and vertical flips. Its folder name says 12 epochs.
+    epochs: int = 12
+    batch_size: int = 8
+    optimizer: str = "adam"  # or "sgd"
+    learning_rate: float = 0.0001
     momentum: float = 0.9
     weight_decay: float = 0.0005
     # Steps over which the learning rate rises to its full value.
     warmup_steps: int = 200
     # The learning rate drops to a tenth after this share of the run (1.0 = never).
     lr_drop_at: float = 0.8
-    amp: bool = False
+    # Largest gradient norm allowed per step (0 = no limit).
+    grad_clip: float = 1.0
+    # Random flips of training frames. Validation frames are never flipped.
+    hflip: bool = True
+    vflip: bool = True
+    amp: bool = True
     workers: int = 0
     seed: int = 0
 

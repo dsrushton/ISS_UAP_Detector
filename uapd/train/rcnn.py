@@ -1,19 +1,25 @@
-"""The Faster R-CNN box trainer: the original notebook, rebuilt.
+"""The Faster R-CNN box trainer: the script that made ``best_map_model.pth``, rebuilt.
+
+That script is ``Pytorch_Training_Jan25.py`` (January 2025; see docs/V2_PLAN.md,
+section 10, for where it was found and how it was matched to the weights).
 
 What is the same: torchvision's Faster R-CNN (ResNet-50 FPN) with a new box
-head, started from the COCO-pretrained detector, trained on RGB frames.
+head, started from the COCO-pretrained detector, trained on RGB frames with
+Adam at 0.0001, batch 8, mixed precision, gradient clipping and random flips.
 
-What the notebook got wrong and this does not:
+What that script got wrong and this does not:
 
-* ``sun`` was class 0, which is the background class, so sun boxes were trained
-  as "nothing here". Classes start at 1.
 * The split was random over consecutive video frames, so validation frames were
   near copies of training frames. The split is by position in each folder.
-* The "accuracy" counted a prediction as right if its class appeared anywhere in
-  the frame. The score is mAP: boxes must overlap a labelled box of their class.
-* The saved weights said nothing about themselves. Each weights file gets a
-  manifest (classes, input, data, versions), and the detector reads it, so
-  frames are prepared for detection exactly as they were for training.
+* Validation frames were randomly flipped too. Only training frames are.
+* The learning rate was cut when the score stopped *falling*, that is, while
+  the model was improving. Here it drops once, late in the run.
+* The class weighting scaled the whole loss by one number, so it did nothing
+  per class. It is left out.
+* Frames were normalised twice (once in augmentation, once inside the model),
+  and the V1 app then fed BGR where training had fed RGB. Frames are normalised
+  once, and each weights file gets a manifest (classes, input, data, versions)
+  that the detector reads, so detection prepares frames exactly as training did.
 """
 
 from __future__ import annotations
@@ -27,7 +33,9 @@ from typing import Any
 import numpy as np
 
 from uapd.regions.manifest import (
+    INPUT_LEGACY_V1,
     INPUT_RGB,
+    INPUT_RGB_NORMALIZED,
     KIND_RCNN,
     LEGACY_MANIFEST,
     ModelManifest,
@@ -46,9 +54,17 @@ PROGRESS_SECONDS = 0.5
 class Frames:
     """Map-style dataset: (model input, target) per labelled frame."""
 
-    def __init__(self, items: list[Item], input_mode: str = INPUT_RGB):
+    def __init__(
+        self,
+        items: list[Item],
+        input_mode: str = INPUT_RGB,
+        hflip: bool = False,
+        vflip: bool = False,
+    ):
         self.items = items
         self.input_mode = input_mode
+        self.hflip = hflip
+        self.vflip = vflip
 
     def __len__(self) -> int:
         return len(self.items)
@@ -68,8 +84,14 @@ class Frames:
         boxes[:, 0::2].clamp_(0, width)
         boxes[:, 1::2].clamp_(0, height)
         keep = ((boxes[:, 2] - boxes[:, 0]) >= 1) & ((boxes[:, 3] - boxes[:, 1]) >= 1)
-        target = {"boxes": boxes[keep], "labels": labels[keep]}
-        return model_input(image, self.input_mode), target
+        boxes, labels = boxes[keep], labels[keep]
+        if self.hflip and torch.rand(()) < 0.5:
+            image = image.flip(2)
+            boxes[:, [0, 2]] = width - boxes[:, [2, 0]]
+        if self.vflip and torch.rand(()) < 0.5:
+            image = image.flip(1)
+            boxes[:, [1, 3]] = height - boxes[:, [3, 1]]
+        return model_input(image, self.input_mode), {"boxes": boxes, "labels": labels}
 
 
 def collate(batch):
@@ -96,7 +118,7 @@ def train_rcnn(job: TrainJob) -> dict[str, Any]:
     model.to(device)
 
     train_loader = DataLoader(
-        Frames(plan.train),
+        Frames(plan.train, hflip=config.hflip, vflip=config.vflip),
         batch_size=config.batch_size,
         shuffle=True,
         num_workers=config.workers,
@@ -145,7 +167,8 @@ def train_rcnn(job: TrainJob) -> dict[str, Any]:
     if job.baseline is not None and plan.val:
         job.run["baseline"] = _score_baseline(job.baseline, evaluate, device, torch)
         job.save_run()
-        report.log(f"Current model {job.baseline.name}: mAP {job.run['baseline']['val']['map']}")
+        for line in _baseline_lines(job.baseline.name, job.run["baseline"]):
+            report.log(line)
         report.event("baseline", **job.run["baseline"])
 
     def record(epoch: int, val: dict[str, Any] | None) -> dict[str, Any]:
@@ -221,8 +244,9 @@ def train_rcnn(job: TrainJob) -> dict[str, Any]:
         "baseline_map": job.run.get("baseline", {}).get("val", {}).get("map"),
     }
     report.log(f"\nBest model: {best} (epoch {best_epoch}, mAP {result['best_map']})")
-    if result["baseline_map"] is not None:
-        report.log(f"Current model on the same images: mAP {result['baseline_map']}")
+    if "baseline" in job.run:
+        for line in _baseline_lines(job.baseline.name, job.run["baseline"]):
+            report.log(line)
     return result
 
 
@@ -327,10 +351,15 @@ def _train_epoch(
             )
         if scaler is not None:
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+        else:
+            loss.backward()
+        if config.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+        if scaler is not None:
             scaler.step(optimizer)
             scaler.update()
         else:
-            loss.backward()
             optimizer.step()
         scheduler.step()
         total += value
@@ -377,5 +406,19 @@ def _score_baseline(path: Path, evaluate, device, torch) -> dict[str, Any]:
         # The baseline may have been trained on these very images.
         "note": "not a held-out comparison unless these images are new to the baseline",
     }
+    if source.input == INPUT_LEGACY_V1:
+        # The V1 weights were trained on RGB; score them that way too.
+        result["val_as_trained"] = {
+            "input": INPUT_RGB_NORMALIZED,
+            **evaluate(model, source.classes, INPUT_RGB_NORMALIZED),
+        }
     del model
     return result
+
+
+def _baseline_lines(name: str, baseline: dict[str, Any]) -> list[str]:
+    lines = [f"Current model {name} with {baseline['input']} input: mAP {baseline['val']['map']}"]
+    if "val_as_trained" in baseline:
+        trained = baseline["val_as_trained"]
+        lines.append(f"Current model {name} with {trained['input']} input: mAP {trained['map']}")
+    return lines

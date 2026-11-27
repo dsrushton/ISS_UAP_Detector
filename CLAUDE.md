@@ -25,8 +25,8 @@ Three rules from the plan that govern every change:
   - `runtime/live.py` — the live app: V2 detection behind the legacy window, recorder and restream
   - `eval/headless.py` — the headless harness
   - `regions/manifest.py` — the JSON file beside a weights file: network kind, classes, input preparation, training record
-  - `labels/` — the contract between labelling and training: `Sample`/`Annotation`, the native `labels.json` format and the reader for the original notebook's CSV format
-  - `train/` — training. `data.py` (folders → class ids, split, report) and `metrics.py` need no PyTorch; `rcnn.py` is the Faster R-CNN box trainer; `__init__.py` holds the trainer registry and the run folder
+  - `labels/` — the contract between labelling and training: `Sample`/`Annotation`, the native `labels.json` format, the labelImg XML reader (the January 2025 labels `best_map_model.pth` was trained on) and the reader for the older CSV label set
+  - `train/` — training. `data.py` (folders → class ids, split, report) and `metrics.py` need no PyTorch; `rcnn.py` is the Faster R-CNN box trainer (the January 2025 script rebuilt; provenance in `docs/V2_PLAN.md` section 10); `__init__.py` holds the trainer registry and the run folder
   - `app/` — the point-and-click app. `window.py` is Tk; `jobs.py` builds command lines and runs each branch as a child process
   - `cli.py` — the `uapd` command
 - `legacy/` — the V1 live app, with the July 2026 patch set applied (scale fix, 3-point contour minimum, working lens-flare guard, truthful `area`, dead-code cleanup). It is the app that runs day to day until V2 has a live runtime, and the baseline `uapd eval --pipeline legacy-v1` compares against. The original unpatched V1 is on `dev`. New work still goes in `uapd/`.
@@ -63,7 +63,7 @@ The three branches of the app stay separable. To work on one, read only its fold
 
 ## Conventions
 
-- Weights trained here carry a manifest (`best.pth` + `best.json`). The detector prepares frames as the manifest says. Weights with no manifest are the V1 weights and get V1's input (BGR, normalised twice); `regions.input` in a profile overrides this. New model types add a manifest `kind`, a loader in `regions.load_region_model` and a trainer in `train.TRAINERS`.
+- Weights trained here carry a manifest (`best.pth` + `best.json`). The detector prepares frames as the manifest says. Weights with no manifest are the V1 weights and get V1's input (`legacy-v1`: BGR, normalised twice). They were trained on RGB, normalised twice; `regions.input = "rgb-normalized"` in a profile runs them that way. Do not change the default without a comparison on live clips: the thresholds were tuned on the BGR behaviour. New model types add a manifest `kind`, a loader in `regions.load_region_model` and a trainer in `train.TRAINERS`.
 - A trained model is a challenger. Do not make anything switch the detector to it automatically; that is the gate's job.
 - Validation frames are split off by position within a folder, never at random: neighbouring video frames are near copies.
 - Configuration comes from a `Config` object passed in. Never read settings at import time and never add module-level mutable settings. (V1's `from SOD_Constants import X` froze values at import, so live edits never reached half the system.)

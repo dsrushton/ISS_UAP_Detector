@@ -34,9 +34,9 @@ class Settings:
     data: list[str] = field(default_factory=list)
     train_out: str = "models"
     init: str = "coco"
-    epochs: str = "10"
-    batch_size: str = "4"
-    learning_rate: str = "0.005"
+    epochs: str = "12"
+    batch_size: str = "8"
+    learning_rate: str = "0.0001"
     compare: bool = True
 
     @classmethod

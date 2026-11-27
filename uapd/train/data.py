@@ -181,6 +181,12 @@ def _warnings(plan: DataPlan, config: TrainConfig) -> list[str]:
             f"Folders have different frame sizes ({listed}). The detector runs on the "
             "cropped frame; check every folder was cropped the same way."
         )
+    formats = sorted({f["format"] for f in report["folders"]})
+    if len(formats) > 1:
+        out.append(
+            f"Folders use different label sets ({', '.join(formats)}). The CSV labels are "
+            "the older August 2024 set; check the folders that fell back to them."
+        )
     unlabelled = sum(f["unlabelled_images"] for f in report["folders"])
     if unlabelled:
         out.append(f"{unlabelled} images have no label file and are not used.")
@@ -206,7 +212,7 @@ def format_report(report: dict[str, Any]) -> str:
         size = "x".join(str(v) for v in folder["image_size"]) if folder["image_size"] else "?"
         lines.append(
             f"{folder['folder']}: {folder['train_images']} train, {folder['val_images']} val, "
-            f"{size} px"
+            f"{size} px, {folder['format']}"
         )
         lines.extend(f"    {problem}" for problem in folder["problems"])
     for warning in report["warnings"]:

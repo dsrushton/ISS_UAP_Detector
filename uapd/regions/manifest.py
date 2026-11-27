@@ -22,11 +22,15 @@ KIND_RCNN = "faster-rcnn-resnet50-fpn"
 # How a cropped BGR frame becomes the model's input.
 # "rgb": channels reversed to RGB, values 0-1. The torchvision model normalises
 #   inside itself. This is what training uses.
-# "legacy-v1": what the V1 app feeds best_map_model.pth: channels left in BGR and
-#   ImageNet-normalised before the model, which then normalises again.
+# "rgb-normalized": RGB, ImageNet-normalised before the model, which then
+#   normalises again. This is what best_map_model.pth was trained on (the January
+#   2025 script normalised in its augmentation step as well).
+# "legacy-v1": what the V1 app feeds best_map_model.pth: the same double
+#   normalisation, but with the channels left in BGR.
 INPUT_RGB = "rgb"
+INPUT_RGB_NORMALIZED = "rgb-normalized"
 INPUT_LEGACY_V1 = "legacy-v1"
-INPUT_MODES = (INPUT_RGB, INPUT_LEGACY_V1)
+INPUT_MODES = (INPUT_RGB, INPUT_RGB_NORMALIZED, INPUT_LEGACY_V1)
 
 LEGACY_CLASSES = ("background", "space", "earth", "iss", "lf", "td", "sun", "nofeed", "panel")
 

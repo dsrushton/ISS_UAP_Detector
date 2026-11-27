@@ -215,12 +215,25 @@ Defaults are chosen so work can start; change any of them before M1.
 
 This replaces the FastAPI viewer of section 3 as the planned front end unless clip review turns out to need a browser.
 
+### Where `best_map_model.pth` came from
+
+Established on 25 November 2026 on the Windows drive, by file hash and not by name:
+
+- The weights (SHA-256 `3de9a200d5a8…`) are byte-identical to `Desktop/Workspace/UAP_Python_2/trainJan10_bb-12e-Full-NoMoon-NoColorJitter/best_map_model.pth`, saved 2025-01-10.
+- The script is `Desktop/Workspace/MTLiens/Pytorch_Training_Jan25.py`, the only file whose `working_dir` is that folder. It was saved 15 minutes after the weights, and says 20 epochs where the folder name says 12, so a setting may have changed after the run.
+- Labels: labelImg XML files in a `2ndTrainingXMLs` subfolder of each frame folder. 27 frame folders under `UAP_Python_2`, 7,994 labelled frames. The `bboxes_N.csv` files beside the frames are the older August 2024 label set (10 classes) and were not used. `moon` boxes (215) were skipped.
+- Recipe: COCO-pretrained `fasterrcnn_resnet50_fpn` with a 9-output head, Adam at 0.0001, batch 8, mixed precision, gradients clipped at 1.0, random horizontal and vertical flips, colour jitter off.
+- The notebook in the `ISS_Object_Detect` repository is the August 2024 version and did not make these weights.
+
+Colour order, measured on 800 of those labelled frames with the deployed weights: fed BGR as the V1 app does, 90.0% of labelled boxes are found (lens flares 74.0%); fed RGB as trained, 99.9% (lens flares 99.5%). The frames were training frames, so the gap on live footage will be smaller. The earlier run scripts converted BGR to RGB; the V1 app dropped the conversion. So the reversal is in detection, not training.
+
 ### Training
 
 - `uapd train --data <folders>` writes `models/<date>-<kind>/` with `run.json`, `last.pth` and `best.pth`, each with a manifest (`.json`).
-- First trainer: `rcnn-boxes`, the original notebook rebuilt. Notebook faults removed: `sun` was class 0 (background); the random split leaked near-identical frames into validation; the "accuracy" ignored box position; saved weights recorded nothing about themselves.
-- Colour order. The notebook trained on RGB. The V1 app feeds the model BGR and normalises twice. So the mismatch is on the detection side. New weights declare `input: rgb` in their manifest and the detector follows it; `best_map_model.pth` has no manifest and keeps V1's input, because that is what the thresholds were tuned on. To see whether it does better on the input it was trained with, run `uapd eval` with a profile that sets `regions.input = "rgb"`. The script that trained `best_map_model.pth` is not in either repository (its 8 classes differ from the notebook's 10), so this has not been confirmed for that file.
-- Score: mAP at IoU 0.5 on validation frames taken from the end of each folder. `--baseline` scores existing weights on the same frames. That comparison is not the gate of section 6 and the baseline may have seen those frames in training.
+- It reads the January XML labels in place (`2ndTrainingXMLs`), and prefers them to the old CSVs in the same folder. Unknown labels such as `moon` are left out and counted.
+- First trainer: `rcnn-boxes`, the January script rebuilt with the same recipe as its defaults. Faults removed: the random split leaked near-identical frames into validation; validation frames were flipped; the learning rate was cut while the model improved (`ReduceLROnPlateau(mode="min")` stepped with an accuracy); the class weighting multiplied the whole loss by one number; frames were normalised twice.
+- Input modes (`uapd/regions/manifest.py`): new weights declare `rgb` (normalised once) in their manifest and the detector follows it. `best_map_model.pth` has no manifest and still gets `legacy-v1` (BGR, normalised twice), because every threshold was tuned on that. `regions.input = "rgb-normalized"` in a profile runs it on the input it was trained on; compare with `uapd eval` on live clips before making that the default.
+- Score: mAP at IoU 0.5 on validation frames taken from the end of each folder. `--baseline` scores existing weights on the same frames; for the V1 weights it reports both inputs. That comparison is not the gate of section 6, and the baseline has seen those frames in training.
 - Adding a model type (a segmentation model, say): a trainer in `uapd.train.TRAINERS`, a manifest `kind`, a loader in `uapd.regions.load_region_model`. The run folder, CLI and app do not change.
 
 ### Labelling contract
@@ -230,7 +243,7 @@ Trainers read `uapd.labels.Sample` objects: an image, a clip group, and annotati
 Two kinds of label, kept apart:
 
 1. **Event verdicts** (rejector data): one verdict per recording from the taxonomy in section 5, stored beside the event's data file. This is the hard-negative stockpile for the learned filter (M5). It never trains the region model.
-2. **Frame annotations** (region-model data): boxes now, masks later, stored as `labels.json` per folder of frames. `uapd train` already reads this, and the notebook's CSV folders.
+2. **Frame annotations** (region-model data): boxes now, masks later, stored as `labels.json` per folder of frames. `uapd train` already reads this, the January labelImg XML folders and the older CSV folders.
 
 What Relabel needs to do, in build order:
 
@@ -239,4 +252,4 @@ What Relabel needs to do, in build order:
 3. Export chosen frames of a clip to a frame folder, pre-filled with the current model's regions (`source: "model:<hash>"`), for correction by hand (`source: "human"`). Only human-checked frames are used for training.
 4. Box editing on a frame. Mask editing stays outside the app (SAM2 in CVAT or Label Studio) with an importer into `labels.json`.
 
-Open questions for Relabel: whether frames exported from recordings are cropped the same way as the old training frames (`uapd train --check` reports frame sizes per folder); what to do with the notebook's `e_t` and `unknown` classes, which the current 8-class model does not have and which are left out of training by default.
+Open questions for Relabel: whether frames exported from recordings are cropped the same way as the old training frames (`uapd train --check` reports frame sizes per folder); whether to train `moon` once there are more than 215 boxes.
