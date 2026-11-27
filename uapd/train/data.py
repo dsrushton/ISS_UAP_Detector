@@ -21,6 +21,7 @@ from uapd.labels import (
     find_label_folders,
     load_folder,
 )
+from uapd.labels.review import read_review
 from uapd.train.config import TrainConfig
 
 Box = tuple[float, float, float, float]
@@ -84,13 +85,22 @@ def plan_data(paths: list[str | Path], config: TrainConfig) -> DataPlan:
     folder_reports = []
     digest = hashlib.sha256()
 
+    rejected_folders: list[str] = []
+    bad_frames = 0
     for folder in folders:
+        review = read_review(folder)
+        if review.rejected:
+            rejected_folders.append(str(folder))
+            continue
         try:
             labels: FolderLabels = load_folder(folder)
         except LabelError as exc:
             raise DataError(str(exc)) from exc
         items = []
         for sample in labels.samples:
+            if sample.image.name in review.bad_frames:
+                bad_frames += 1
+                continue
             item, dropped, bad = _item(sample, lookup, class_ids)
             unknown.update(dropped)
             bad_boxes += bad
@@ -138,6 +148,8 @@ def plan_data(paths: list[str | Path], config: TrainConfig) -> DataPlan:
         "dropped_bad_boxes": bad_boxes,
         "images_without_boxes": sum(1 for it in (*plan.train, *plan.val) if not it.boxes),
         "labels_sha256": digest.hexdigest(),
+        "rejected_folders": rejected_folders,
+        "bad_frames": bad_frames,
         "warnings": [],
     }
     plan.report["warnings"] = _warnings(plan, config)
@@ -182,6 +194,13 @@ def _warnings(plan: DataPlan, config: TrainConfig) -> list[str]:
             f"Boxes left out because their label is not a class or an alias: {names}. "
             "Those areas are trained as background."
         )
+    if report["rejected_folders"]:
+        out.append(
+            f"{len(report['rejected_folders'])} folder(s) left out because their review says "
+            f"reject: {', '.join(Path(f).name for f in report['rejected_folders'])}."
+        )
+    if report["bad_frames"]:
+        out.append(f"{report['bad_frames']} frames left out: flagged as bad in review.")
     if report["dropped_bad_boxes"]:
         out.append(f"{report['dropped_bad_boxes']} boxes left out: under 1 px wide or high.")
     for name, counts in report["classes"].items():

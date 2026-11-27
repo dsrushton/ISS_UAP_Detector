@@ -1,7 +1,8 @@
 """The app window: a home page with three branches, each on its own page.
 
-Tk only draws forms and shows output here. The work is done by child processes
-(see ``uapd.app.jobs``).
+Detect and Retrain only draw forms and show output; their work is done by child
+processes (see ``uapd.app.jobs``). Relabel shows pictures and writes small files
+itself (see ``uapd.app.relabel``).
 """
 
 from __future__ import annotations
@@ -25,7 +26,8 @@ BRANCHES = (
     (
         "relabel",
         "Relabel captures",
-        "Go through saved captures and say what each one was. Not built yet.",
+        "Look through labelled frames and outlines before training, and give saved "
+        "captures a verdict.",
     ),
     (
         "retrain",
@@ -257,19 +259,13 @@ class RelabelPage(Page):
 
     def __init__(self, app: App):
         super().__init__(app)
-        captures = REPO_ROOT / "Detections" / "AVI"
-        clips = len(list(captures.glob("*.avi"))) if captures.is_dir() else 0
-        data = len(list(captures.glob("*.json"))) if captures.is_dir() else 0
-        text = (
-            "This branch is not built yet.\n\n"
-            f"Captures waiting in {captures}: {clips} clips, {data} with a data file.\n\n"
-            "What it will do: play each capture, take one verdict for the whole event "
-            "(flare, ice, panel edge, debris, artifact, unknown...), and let region boxes be "
-            "corrected on single frames. Verdicts become the stockpile of prosaic examples; "
-            "corrected frames are saved as labels.json, which Retrain already reads.\n\n"
-            "The design is in docs/V2_PLAN.md, section 10."
-        )
-        ttk.Label(self, text=text, wraplength=640, justify="left").pack(anchor="w")
+        from uapd.app import relabel
+
+        self.form.pack_forget()
+        relabel.build(self)
+
+    def collect(self) -> None:
+        pass  # the tabs write their folders into the settings as they are loaded
 
 
 class RetrainPage(Page):

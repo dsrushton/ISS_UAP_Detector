@@ -38,6 +38,9 @@ class Settings:
     batch_size: str = "8"
     learning_rate: str = "0.0001"
     compare: bool = True
+    # Relabel
+    review_root: str = "data/masks-jan"
+    captures_dir: str = "Detections/AVI"
 
     @classmethod
     def load(cls, path: Path = SETTINGS_FILE) -> Settings:

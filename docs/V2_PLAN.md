@@ -210,7 +210,7 @@ Defaults are chosen so work can start; change any of them before M1.
 | Branch | Runs | State |
 |---|---|---|
 | Detect / Broadcast | `uapd run` | Built (M2 live app) |
-| Relabel captures | — | Not built; contract below |
+| Relabel captures | in the window | Viewer, review marks and verdicts built; frame export and box editing not built |
 | Retrain | `uapd train` | Built for the region model with boxes |
 
 This replaces the FastAPI viewer of section 3 as the planned front end unless clip review turns out to need a browser.
@@ -245,7 +245,7 @@ Two kinds of label, kept apart:
 1. **Event verdicts** (rejector data): one verdict per recording from the taxonomy in section 5, stored beside the event's data file. This is the hard-negative stockpile for the learned filter (M5). It never trains the region model.
 2. **Frame annotations** (region-model data): boxes now, masks later, stored as `labels.json` per folder of frames. `uapd train` already reads this, the January labelImg XML folders and the older CSV folders.
 
-What Relabel needs to do, in build order:
+What Relabel needs to do, in build order (1 and 2 are built, as is a viewer for label folders with review marks that `uapd train` honours; a capture is played as recorded, with the boxes already drawn in it, not redrawn from the data file):
 
 1. List recordings in `Detections/AVI` with their data files; play a clip with the detector's boxes drawn from the data file.
 2. One-key verdict per event; write it to a verdict file beside the clip (and to SQLite when the index exists).

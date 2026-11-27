@@ -14,7 +14,7 @@ What exists so far (milestones M0 and M1):
 - A temporal layer: detections are linked into tracks, and only a track seen on three frames counts, which drops one-frame flashes such as cosmic ray hits
 - `uapd run`, the live app: V2 detection behind the existing window, recording and YouTube restream, writing a JSON data file beside each recording
 
-- `uapd app`, a point-and-click window with three branches: Detect / Broadcast, Relabel captures (not built yet) and Retrain
+- `uapd app`, a point-and-click window with three branches: Detect / Broadcast, Relabel captures (a viewer for labelled frames and for saved captures, with review marks and verdicts) and Retrain
 - `uapd train`, which trains the region model on labelled frames and saves each model with a manifest the detector reads
 
 ```bash

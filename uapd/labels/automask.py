@@ -10,13 +10,18 @@ The mask model is a labelling aid here, not part of the detector. Its output
 needs a look before training: ``build_masks`` writes a contact sheet per folder
 and reports how much of each box its outline fills.
 
-Polygons are outer outlines only. A space region that surrounds part of the
-station comes out as one outline that includes it; whoever uses the masks takes
-the other classes away from space.
+The station is better found by elimination than by the mask model, which picks
+out one module of it: ``eliminate`` makes the station everything inside its box
+that is not space or Earth.
+
+An outline with a hole in it (the station around a pocket of space) is stored as
+one polygon that runs along the outer edge, in to the hole, round it and back out
+the same way. Filling such a polygon leaves the hole empty.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from collections.abc import Callable, Sequence
@@ -90,18 +95,39 @@ def mask_to_polygons(
         inside = cv2.morphologyEx(inside, cv2.MORPH_OPEN, kernel)
 
     box_area = float((x2 - x1) * (y2 - y1))
-    contours, _ = cv2.findContours(inside, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    smallest = settings.min_piece * box_area
+    contours, hierarchy = cv2.findContours(inside, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if hierarchy is None:
+        return [], 0.0
+    # hierarchy rows are (next, previous, first child, parent); holes have a parent.
+    parents = hierarchy[0][:, 3]
+    outer = [i for i in range(len(contours)) if parents[i] < 0]
     polygons, covered = [], 0.0
-    for contour in sorted(contours, key=cv2.contourArea, reverse=True):
-        area = cv2.contourArea(contour)
-        if area < settings.min_piece * box_area:
+    for index in sorted(outer, key=lambda i: cv2.contourArea(contours[i]), reverse=True):
+        area = cv2.contourArea(contours[index])
+        if area < smallest:
             break
-        approx = cv2.approxPolyDP(contour, settings.simplify, True).reshape(-1, 2)
-        if len(approx) < 3:
+        points = cv2.approxPolyDP(contours[index], settings.simplify, True).reshape(-1, 2)
+        if len(points) < 3:
             continue
-        polygons.append(tuple((float(x), float(y)) for x, y in approx))
+        for hole in (i for i in range(len(contours)) if parents[i] == index):
+            hole_area = cv2.contourArea(contours[hole])
+            if hole_area < smallest:
+                continue
+            inner = cv2.approxPolyDP(contours[hole], settings.simplify, True).reshape(-1, 2)
+            if len(inner) >= 3:
+                points = _cut_in(points, inner)
+                area -= hole_area
+        polygons.append(tuple((float(x), float(y)) for x, y in points))
         covered += area
     return polygons, covered / box_area
+
+
+def _cut_in(outer: np.ndarray, hole: np.ndarray) -> np.ndarray:
+    """One polygon for ``outer`` with ``hole`` cut out of it, joined where they are closest."""
+    gaps = ((outer[:, None, :].astype(np.int64) - hole[None, :, :]) ** 2).sum(axis=2)
+    a, b = np.unravel_index(int(gaps.argmin()), gaps.shape)
+    return np.concatenate([outer[: a + 1], hole[b:], hole[: b + 1], outer[a:]])
 
 
 def outline_sample(
@@ -148,6 +174,129 @@ def outline_sample(
     return out, fills, kept
 
 
+ELIMINATION_FILE = "elimination.json"
+BACKUP_FILE = "labels.before-elimination.json"
+SOURCE_ELIMINATION = "elimination"
+SOURCE_HUMAN = "human"
+
+
+def fill_annotations(
+    shape: tuple[int, int], annotations: Sequence[Annotation], labels: Sequence[str]
+) -> np.ndarray:
+    """A mask (255 inside) of the outlines of ``labels`` among ``annotations``."""
+    import cv2
+
+    wanted = {name.lower() for name in labels}
+    mask = np.zeros(shape, np.uint8)
+    for a in annotations:
+        if a.kind == KIND_POLYGON and a.label.lower() in wanted and len(a.points) >= 3:
+            cv2.fillPoly(mask, [np.array(a.points, np.int32)], 255)
+    return mask
+
+
+def eliminate_sample(
+    annotations: Sequence[Annotation],
+    boxes: Sequence[Sequence[float]],
+    shape: tuple[int, int],
+    settings: MaskSettings,
+    target: str = "iss",
+    minus: Sequence[str] = ("space", "earth"),
+) -> list[Annotation]:
+    """``annotations`` with ``target`` redone as: its boxes, less the ``minus`` outlines."""
+    height, width = shape
+    area = np.zeros(shape, np.uint8)
+    for x1, y1, x2, y2 in boxes:
+        area[max(int(y1), 0) : int(np.ceil(y2)), max(int(x1), 0) : int(np.ceil(x2))] = 255
+    area[fill_annotations(shape, annotations, minus) > 0] = 0
+    polygons, _ = mask_to_polygons(area > 0, (0, 0, width, height), settings)
+    # Outlines a person added for the target are kept beside what is left over.
+    out = [
+        a
+        for a in annotations
+        if a.label.lower() != target.lower() or a.source.startswith(SOURCE_HUMAN)
+    ]
+    for points in polygons:
+        xs, ys = [p[0] for p in points], [p[1] for p in points]
+        out.append(
+            Annotation(
+                target,
+                (min(xs), min(ys), max(xs), max(ys)),
+                KIND_POLYGON,
+                points,
+                source=SOURCE_ELIMINATION,
+            )
+        )
+    return out
+
+
+def read_elimination(folder: Path) -> dict[str, Any] | None:
+    try:
+        with open(Path(folder) / ELIMINATION_FILE, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def eliminate_folder(
+    folder: Path,
+    source: Path | None = None,
+    settings: MaskSettings | None = None,
+    target: str = "iss",
+    minus: Sequence[str] = ("space", "earth"),
+    review_frames: int = 0,
+) -> tuple[int, list[np.ndarray]]:
+    """Redo ``target`` in an outlined folder by elimination. Returns images changed.
+
+    The boxes of ``target`` come from ``source`` (the folder the outlines were
+    made from) the first time, and are kept in ``elimination.json`` so that later
+    runs, after outlines were added or removed, need only the folder itself. The
+    labels as they were before the first run are kept in a backup file.
+    """
+    import cv2
+
+    folder = Path(folder)
+    settings = settings or MaskSettings(min_piece=0.002)
+    stored = read_elimination(folder)
+    if stored is None or stored.get("target") != target:
+        if source is None:
+            raise LabelError(
+                f"{folder}: the boxes of {target!r} are needed; give the source folder"
+            )
+        boxes = {
+            sample.image.name: [
+                list(a.box) for a in sample.annotations if a.label.lower() == target
+            ]
+            for sample in load_folder(source).samples
+        }
+        stored = {"schema_version": 1, "target": target, "source": str(source), "boxes": boxes}
+        with open(folder / ELIMINATION_FILE, "w", encoding="utf-8") as fh:
+            json.dump(stored, fh)
+    labels = load_folder(folder)
+    if labels.format != "labels-json":
+        raise LabelError(f"{folder} is not an outlined folder (no {LABELS_FILE})")
+    if not (folder / BACKUP_FILE).exists():
+        shutil.copyfile(folder / LABELS_FILE, folder / BACKUP_FILE)
+
+    shape: tuple[int, int] | None = None
+    samples, sheet = [], []
+    step = max(len(labels.samples) // max(review_frames, 1), 1)
+    for number, sample in enumerate(labels.samples):
+        wanted = bool(review_frames) and number % step == 0 and len(sheet) < review_frames
+        image = None
+        if shape is None or wanted:
+            image = cv2.imread(str(sample.image), cv2.IMREAD_COLOR)
+            if image is None:
+                raise LabelError(f"could not read image {sample.image}")
+            shape = image.shape[:2]  # the frames of one folder share a size
+        boxes = stored["boxes"].get(sample.image.name, [])
+        annotations = eliminate_sample(sample.annotations, boxes, shape, settings, target, minus)
+        samples.append(Sample(sample.image, tuple(annotations), sample.group))
+        if wanted and image is not None:
+            sheet.append(draw_annotations(image, annotations))
+    write_folder(folder, samples)
+    return len(samples), sheet
+
+
 def sam_masker(model: str = DEFAULT_MODEL, device: str | None = None) -> Masker:
     """SAM 2 through the ultralytics package, prompted with boxes."""
     try:
@@ -167,6 +316,190 @@ def sam_masker(model: str = DEFAULT_MODEL, device: str | None = None) -> Masker:
         if len(masks) != len(boxes):
             raise LabelError(f"the mask model returned {len(masks)} masks for {len(boxes)} boxes")
         return masks
+
+    return run
+
+
+def common_root(folders: Sequence[Path]) -> Path:
+    resolved = [Path(f).resolve() for f in folders]
+    return Path(os.path.commonpath(resolved)) if len(resolved) > 1 else resolved[0].parent
+
+
+def output_folders(folders: Sequence[Path], out_root: Path) -> list[tuple[Path, Path]]:
+    """Each source folder with its outlined copy: the path below what the sources share."""
+    common = common_root(folders)
+    out_root = Path(out_root).resolve()
+    return [(Path(f).resolve(), out_root / Path(f).resolve().relative_to(common)) for f in folders]
+
+
+SOURCE_DARK = "dark-in-box"
+# Space is dark. Brightest colour channel below this counts as dark.
+DARK_BELOW = 40
+# A mask-model "space" outline with more than this share of bright pixels is an
+# outline of hardware: in a box of sky with a module in it, the module is the
+# object the model picks.
+HARDWARE_SHARE = 0.25
+
+
+def dark_pixels(image: np.ndarray, smooth: int = 5) -> np.ndarray:
+    """Boolean mask of the dark parts of a BGR image, without specks."""
+    import cv2
+
+    dark = (image.max(axis=2) < DARK_BELOW).astype(np.uint8) * 255
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (smooth, smooth))
+    dark = cv2.morphologyEx(cv2.morphologyEx(dark, cv2.MORPH_OPEN, kernel), cv2.MORPH_CLOSE, kernel)
+    return dark > 0
+
+
+def carve(
+    annotations: Sequence[Annotation],
+    shape: tuple[int, int],
+    label: str,
+    keep: np.ndarray,
+    settings: MaskSettings,
+    source: str,
+) -> list[Annotation]:
+    """``annotations`` with the model-made outlines of ``label`` replaced by ``keep``."""
+    height, width = shape
+    out = [
+        a
+        for a in annotations
+        if not (
+            a.label.lower() == label
+            and a.kind == KIND_POLYGON
+            and not a.source.startswith(SOURCE_HUMAN)
+        )
+    ]
+    polygons, _ = mask_to_polygons(keep, (0, 0, width, height), settings)
+    for points in polygons:
+        xs, ys = [p[0] for p in points], [p[1] for p in points]
+        out.append(
+            Annotation(
+                label, (min(xs), min(ys), max(xs), max(ys)), KIND_POLYGON, points, source=source
+            )
+        )
+    return out
+
+
+def fix_space_sample(
+    annotations: Sequence[Annotation],
+    image: np.ndarray,
+    space_boxes: Sequence[Sequence[float]],
+    settings: MaskSettings,
+) -> list[Annotation] | None:
+    """Redo the mask model's space outlines so that space is dark sky.
+
+    An outline that is mostly dark is kept, trimmed to its dark pixels. One that is
+    mostly bright is hardware: space is then the dark part of the labelled space
+    boxes it lies in, without that hardware. Earth outlines are taken out. Returns
+    None when the image has no space outline made by the mask model.
+    """
+    import cv2
+
+    shape = image.shape[:2]
+    dark = dark_pixels(image)
+    good = np.zeros(shape, bool)
+    hardware = np.zeros(shape, bool)
+    found = False
+    for a in annotations:
+        if (
+            a.label.lower() != "space"
+            or a.kind != KIND_POLYGON
+            or not a.source.startswith("model:")
+        ):
+            continue
+        found = True
+        mask = np.zeros(shape, np.uint8)
+        cv2.fillPoly(mask, [np.array(a.points, np.int32)], 255)
+        mask = mask > 0
+        if not mask.any():
+            continue
+        if (~dark[mask]).mean() > HARDWARE_SHARE:
+            hardware |= mask
+        else:
+            good |= mask
+    if not found:
+        return None
+    space = good & dark
+    for x1, y1, x2, y2 in space_boxes:
+        box = np.zeros(shape, bool)
+        box[max(int(y1), 0) : int(np.ceil(y2)), max(int(x1), 0) : int(np.ceil(x2))] = True
+        if (hardware & box).any():
+            space |= box & dark & ~hardware
+    space &= fill_annotations(shape, annotations, ["earth"]) == 0
+    return carve(annotations, shape, "space", space, settings, SOURCE_DARK)
+
+
+def fix_space_folder(
+    folder: Path, source: Path, review_frames: int = 0
+) -> tuple[int, list[np.ndarray]]:
+    """Redo the space outlines of an outlined folder (see ``fix_space_sample``), then
+    the class found by elimination. ``source`` is the folder the outlines were made
+    from, for its space boxes. Returns the number of images changed."""
+    import cv2
+
+    folder = Path(folder)
+    labels = load_folder(folder)
+    if labels.format != "labels-json":
+        raise LabelError(f"{folder} is not an outlined folder (no {LABELS_FILE})")
+    boxes = {
+        sample.image.name: [a.box for a in sample.annotations if a.label.lower() == "space"]
+        for sample in load_folder(source).samples
+    }
+    stored = read_elimination(folder)
+    settings = MaskSettings(min_piece=0.002)
+    samples, sheet, changed = [], [], 0
+    step = max(len(labels.samples) // max(review_frames, 1), 1)
+    for number, sample in enumerate(labels.samples):
+        image = cv2.imread(str(sample.image), cv2.IMREAD_COLOR)
+        if image is None:
+            raise LabelError(f"could not read image {sample.image}")
+        annotations = fix_space_sample(
+            sample.annotations, image, boxes.get(sample.image.name, []), settings
+        )
+        if annotations is None:
+            annotations = list(sample.annotations)
+        else:
+            changed += 1
+            if stored is not None:
+                annotations = eliminate_sample(
+                    annotations,
+                    stored["boxes"].get(sample.image.name, []),
+                    image.shape[:2],
+                    settings,
+                    stored["target"],
+                )
+        samples.append(Sample(sample.image, tuple(annotations), sample.group))
+        if review_frames and number % step == 0 and len(sheet) < review_frames:
+            sheet.append(draw_annotations(image, annotations))
+    if changed:
+        shutil.copyfile(folder / LABELS_FILE, folder / "labels.before-space-fix.json")
+        write_folder(folder, samples)
+    return changed, sheet
+
+
+def sam_point_masker(model: str = DEFAULT_MODEL, device: str | None = None):
+    """SAM 2 prompted with one point: (BGR image, (x, y)) -> boolean mask of what is there."""
+    try:
+        from ultralytics import SAM
+    except ImportError as exc:
+        raise LabelError(
+            f"outlining by click needs the ultralytics package: {exc} "
+            "(install with: pip install -e '.[yolo]')"
+        ) from exc
+    sam = SAM(model)
+
+    def run(image: np.ndarray, point: Sequence[float]) -> np.ndarray:
+        result = sam(
+            image,
+            points=[[float(point[0]), float(point[1])]],
+            labels=[1],
+            device=device,
+            verbose=False,
+        )[0]
+        if result.masks is None or len(result.masks.data) == 0:
+            return np.zeros(image.shape[:2], bool)
+        return result.masks.data[0].cpu().numpy().astype(bool)
 
     return run
 
@@ -191,11 +524,9 @@ def build_masks(
     import cv2
 
     settings = settings or MaskSettings()
-    folders = [Path(f).resolve() for f in folders]
-    common = Path(os.path.commonpath(folders)) if len(folders) > 1 else folders[0].parent
     results = []
-    for folder in folders:
-        target = Path(out_root) / folder.relative_to(common)
+    common = common_root(folders)
+    for folder, target in output_folders(folders, Path(out_root)):
         result = FolderResult(folder, target)
         results.append(result)
         if (target / LABELS_FILE).is_file() and not force:

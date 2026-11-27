@@ -7,6 +7,7 @@ import json
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from uapd.config import Config, ConfigError
 from uapd.eval.headless import FRAME_MODES, dumps_report, run_eval, write_report
@@ -111,6 +112,18 @@ def build_parser() -> argparse.ArgumentParser:
     mk.add_argument("--device", help="cuda or cpu (default: cuda when available)")
     mk.add_argument("--limit", type=int, help="only the first N images of each folder, for a trial")
     mk.add_argument("--force", action="store_true", help="redo folders that are already done")
+    mk.add_argument(
+        "--fix-space",
+        action="store_true",
+        help="do not run the mask model; redo its space outlines in the outlined copies so "
+        "that space is dark sky, then the station by elimination",
+    )
+    mk.add_argument(
+        "--eliminate",
+        metavar="NAME",
+        help="do not run the mask model; redo this class in the outlined copies as its boxes "
+        "less the space and earth outlines (use: --eliminate iss)",
+    )
 
     sub.add_parser("app", help="open the point-and-click app")
 
@@ -232,6 +245,34 @@ def _cmd_masks(args: argparse.Namespace) -> int:
 
     if not args.data:
         raise ValueError("give at least one --data folder")
+    if args.fix_space:
+        import cv2
+
+        folders = resolve_folders(args.data)
+        review = Path(args.out) / automask.REVIEW_FOLDER
+        review.mkdir(parents=True, exist_ok=True)
+        for source, target in automask.output_folders(folders, Path(args.out)):
+            count, sheet = automask.fix_space_folder(target, source, review_frames=12)
+            if sheet:
+                name = "__".join(target.relative_to(Path(args.out).resolve()).parts) + ".jpg"
+                cv2.imwrite(str(review / name), automask.contact_sheet(sheet))
+            print(f"{target}: space redone in {count} images", flush=True)
+        return 0
+    if args.eliminate:
+        import cv2
+
+        folders = resolve_folders(args.data)
+        review = Path(args.out) / automask.REVIEW_FOLDER
+        review.mkdir(parents=True, exist_ok=True)
+        for source, target in automask.output_folders(folders, Path(args.out)):
+            count, sheet = automask.eliminate_folder(
+                target, source, target=args.eliminate, review_frames=12
+            )
+            if sheet:
+                name = "__".join(target.relative_to(Path(args.out).resolve()).parts) + ".jpg"
+                cv2.imwrite(str(review / name), automask.contact_sheet(sheet))
+            print(f"{target}: {args.eliminate} redone by elimination in {count} images", flush=True)
+        return 0
     settings = automask.MaskSettings()
     if args.classes:
         settings = automask.MaskSettings(mask_classes=tuple(args.classes))
