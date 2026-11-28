@@ -56,3 +56,6 @@ models/
 
 # Local training data built by uapd masks
 data/
+
+# Pretrained weights that ultralytics downloads into the working folder
+/*.pt

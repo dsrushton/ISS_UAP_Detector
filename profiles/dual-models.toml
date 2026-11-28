@@ -1,0 +1,16 @@
+# An optional profile for running two region models together
+# (uapd run --weights <outline model> --second-weights best_map_model.pth).
+#
+# This setting only affects the box model. It feeds best_map_model.pth the colour
+# order it was trained on, in place of the app's usual input (red and blue swapped).
+#
+# What changes, measured on a night-side clip of 27 November 2026:
+#   usual input (leave this profile out): the box model calls the night side total
+#     darkness on every frame, which stops detection, and reports lens flares that
+#     are not there.
+#   this profile: no total darkness and no false flares; detection carries on.
+#
+# Total darkness stopping detection is wanted (docs/V2_PLAN.md, section 11), so the
+# default is to run WITHOUT this profile. It is here for comparison.
+[regions]
+input = "rgb-normalized"

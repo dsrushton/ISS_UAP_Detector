@@ -173,10 +173,20 @@ def build_core_pipeline(
     weights: str | Path = "best_map_model.pth",
     config: Config | None = None,
     background: bool = False,
+    second_weights: str | Path | None = None,
 ) -> CorePipeline:
-    """The core pipeline with the region model in ``weights``."""
+    """The core pipeline with the region model in ``weights``.
+
+    With ``second_weights``, that model supplies lens flares, the sun, panels,
+    total darkness and no feed, and ``weights`` supplies the rest
+    (``uapd.regions.combined``).
+    """
     from uapd.regions import load_region_model
 
     config = config or Config()
     model = load_region_model(weights, config.regions)
+    if second_weights:
+        from uapd.regions.combined import CombinedRegionModel
+
+        model = CombinedRegionModel(model, load_region_model(second_weights, config.regions))
     return CorePipeline(config, model, background=background)

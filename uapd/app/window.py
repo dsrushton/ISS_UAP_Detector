@@ -15,6 +15,11 @@ from typing import Any
 from uapd.app.jobs import REPO_ROOT, Job, Settings, detect_command, parse_line, train_command
 
 POLL_MS = 150
+# Trainers, as the Retrain page names them.
+TRAIN_KINDS = {
+    "rcnn-boxes": "Boxes (Faster R-CNN)",
+    "yolo-seg": "Outlines (YOLO segmentation)",
+}
 PAD = 12
 
 BRANCHES = (
@@ -220,7 +225,19 @@ class DetectPage(Page):
             row=1, column=1, sticky="w", padx=6
         )
         self.weights = self.field(2, "Model weights", s.weights, browse="file")
-        self.profile = self.field(3, "Settings profile (optional)", s.profile, browse="file")
+        self.second_weights = self.field(
+            3, "Second model (optional)", s.second_weights, browse="file"
+        )
+        ttk.Label(
+            self.form,
+            text="With a second model, it finds lens flares, sun, panels, total darkness and "
+            "no feed, and the first finds space, Earth and the station. "
+            "For example: an outline model first, best_map_model.pth second.",
+            style="Hint.TLabel",
+            wraplength=560,
+            justify="left",
+        ).grid(row=4, column=1, sticky="w", padx=6)
+        self.profile = self.field(5, "Settings profile (optional)", s.profile, browse="file")
 
         buttons = ttk.Frame(self)
         buttons.pack(fill="x", pady=(PAD, 0))
@@ -243,6 +260,7 @@ class DetectPage(Page):
     def collect(self) -> None:
         self.settings.source = self.source.get()
         self.settings.weights = self.weights.get()
+        self.settings.second_weights = self.second_weights.get()
         self.settings.profile = self.profile.get()
 
     def begin(self) -> None:
@@ -289,22 +307,35 @@ class RetrainPage(Page):
             style="Hint.TLabel",
         ).grid(row=1, column=1, sticky="w", padx=6)
 
-        self.init = self.field(2, "Start from", s.init, browse="file")
+        ttk.Label(self.form, text="Model type").grid(row=2, column=0, sticky="w", pady=3)
+        self.kind = tk.StringVar(value=TRAIN_KINDS.get(s.train_kind, TRAIN_KINDS["rcnn-boxes"]))
+        ttk.Combobox(
+            self.form, textvariable=self.kind, values=list(TRAIN_KINDS.values()), state="readonly"
+        ).grid(row=2, column=1, sticky="ew", padx=6)
+        self.train_config = self.field(3, "Settings file (optional)", s.train_config, browse="file")
         ttk.Label(
             self.form,
-            text="coco = the pretrained detector (downloaded once), or a weights file.",
+            text="A .toml file with held-out folders, patience and the like. "
+            "The fields below override it.",
             style="Hint.TLabel",
-        ).grid(row=3, column=1, sticky="w", padx=6)
-        self.epochs = self.field(4, "Epochs", s.epochs)
-        self.batch_size = self.field(5, "Batch size", s.batch_size)
-        self.learning_rate = self.field(6, "Learning rate", s.learning_rate)
-        self.out = self.field(7, "Save runs in", s.train_out, browse="folder")
+        ).grid(row=4, column=1, sticky="w", padx=6)
+        self.init = self.field(5, "Start from", s.init, browse="file")
+        ttk.Label(
+            self.form,
+            text="coco = the pretrained model (downloaded once), or a weights file.",
+            style="Hint.TLabel",
+        ).grid(row=6, column=1, sticky="w", padx=6)
+        self.epochs = self.field(7, "Epochs", s.epochs)
+        self.batch_size = self.field(8, "Batch size", s.batch_size)
+        self.learning_rate = self.field(9, "Learning rate", s.learning_rate)
+        self.out = self.field(10, "Save runs in", s.train_out, browse="folder")
         self.compare = tk.BooleanVar(value=s.compare)
         ttk.Checkbutton(
             self.form,
-            text="Score the current model (Detect page) on the same validation frames",
+            text="Score the current model (Detect page) on the same validation frames "
+            "(box models only)",
             variable=self.compare,
-        ).grid(row=8, column=1, sticky="w", padx=6, pady=3)
+        ).grid(row=11, column=1, sticky="w", padx=6, pady=3)
 
         buttons = ttk.Frame(self)
         buttons.pack(fill="x", pady=(PAD, 0))
@@ -341,6 +372,10 @@ class RetrainPage(Page):
         s = self.settings
         s.data = list(self.folders.get(0, "end"))
         s.init = self.init.get()
+        s.train_kind = next(
+            (key for key, shown in TRAIN_KINDS.items() if shown == self.kind.get()), "rcnn-boxes"
+        )
+        s.train_config = self.train_config.get()
         s.epochs = self.epochs.get()
         s.batch_size = self.batch_size.get()
         s.learning_rate = self.learning_rate.get()
@@ -381,6 +416,12 @@ class RetrainPage(Page):
                 f"Epoch {event['epoch']} of {event['epochs']}, step {event['step']} of "
                 f"{event['steps']}, loss {event['loss']:.3f}"
             )
+        elif kind == "epoch":
+            # The outline trainer reports once an epoch, not every step.
+            self.progress.configure(value=event["epoch"] / event["epochs"])
+            score = (event.get("val") or {}).get("map")
+            shown = "-" if score is None else f"{score:.3f}"
+            self.status.set(f"Epoch {event['epoch']} of {event['epochs']} done, score {shown}")
         elif kind == "done":
             self.progress.configure(value=1.0)
             self.best_weights = event.get("best_weights")

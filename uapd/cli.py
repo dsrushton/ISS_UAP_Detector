@@ -15,6 +15,11 @@ from uapd.pipeline import PipelineError
 from uapd.pipelines import PIPELINES, build_pipeline
 from uapd.sources import SourceError, open_source
 
+SECOND_HELP = (
+    "a second region model, used for lens flares, sun, panels, total darkness and no feed; "
+    "the first then supplies space, Earth and the station (core pipeline only)"
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="uapd", description="ISS UAP Detector V2")
@@ -41,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
         "those with any candidate including rejected ones, or all",
     )
     ev.add_argument("--weights", default="best_map_model.pth", help="path to the RCNN weights file")
+    ev.add_argument("--second-weights", help=SECOND_HELP)
     ev.add_argument("--profile", help="TOML profile to apply over the defaults (core only)")
     ev.add_argument(
         "--rcnn-cycle",
@@ -57,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--weights", default="best_map_model.pth", help="path to the RCNN weights file"
     )
+    run.add_argument("--second-weights", help=SECOND_HELP)
     run.add_argument("--profile", help="TOML profile to apply over the defaults")
 
     tr = sub.add_parser(
@@ -70,6 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="folder of labelled frames, or a folder to search for them (repeatable)",
     )
     tr.add_argument("--config", help="TOML file of training settings")
+    tr.add_argument(
+        "--kind",
+        help="which trainer: rcnn-boxes (boxes, the default) or yolo-seg (outlines)",
+    )
     tr.add_argument("--out", default="models", help="where run folders go (default: models)")
     tr.add_argument("--epochs", type=int)
     tr.add_argument("--batch-size", type=int)
@@ -169,7 +180,11 @@ def _cmd_eval(args: argparse.Namespace) -> int:
                 "--rcnn-cycle applies to legacy-v1; set regions.cycle_frames in a profile"
             )
         config = Config.load(args.profile) if args.profile else Config()
-        options = {"weights": args.weights, "config": config}
+        options = {
+            "weights": args.weights,
+            "config": config,
+            "second_weights": args.second_weights,
+        }
     pipeline = build_pipeline(args.pipeline, **options)
     try:
         report = run_eval(pipeline, source, max_frames=args.max_frames, frame_mode=args.frame_mode)
@@ -195,7 +210,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     config = Config.load(args.profile) if args.profile else Config()
     try:
-        run_live(config, args.weights, args.source)
+        run_live(config, args.weights, args.source, args.second_weights)
     except KeyboardInterrupt:
         pass
     # The legacy restream leaves threads running that keep the process alive after
@@ -218,6 +233,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
         "init": args.init,
         "val_fraction": args.val_fraction,
         "patience": args.patience,
+        "kind": args.kind,
     }
     config = config.replace(**{k: v for k, v in flags.items() if v is not None})
     if not args.data:

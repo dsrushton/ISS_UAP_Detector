@@ -27,6 +27,8 @@ def test_detect_command():
     ]
     command = detect_command(Settings(source=" clip.mp4 ", weights="m/best.pth", profile="p.toml"))
     assert command[4:] == ["clip.mp4", "--weights", "m/best.pth", "--profile", "p.toml"]
+    both = detect_command(Settings(weights="seg/best.pt", second_weights="best_map_model.pth"))
+    assert both[4:] == ["--weights", "seg/best.pt", "--second-weights", "best_map_model.pth"]
 
 
 def test_train_command(tmp_path):
@@ -64,3 +66,14 @@ def test_job_collects_output_and_exit_code(tmp_path):
         time.sleep(0.02)
     assert [line.strip() for line in lines] == ["one", "two"]
     assert code == 3
+
+
+def test_train_command_for_the_outline_trainer_and_unchanged_for_boxes():
+    boxes = train_command(Settings(data=["frames"]))
+    assert "--kind" not in boxes and "--config" not in boxes
+    outlines = train_command(
+        Settings(data=["frames"], train_kind="yolo-seg", train_config="models/seg.toml")
+    )
+    assert outlines[outlines.index("--kind") + 1] == "yolo-seg"
+    assert outlines[outlines.index("--config") + 1] == "models/seg.toml"
+    assert "--baseline" not in outlines

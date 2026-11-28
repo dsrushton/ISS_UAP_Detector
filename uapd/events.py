@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from uapd.eval.headless import _json_default
-from uapd.pipeline import Detection, FrameResult, Region
+from uapd.pipeline import Detection, FrameResult, Region, region_record
 
 EVENT_SCHEMA_VERSION = 1
 
@@ -104,10 +104,7 @@ def _detection(detection: Detection) -> dict[str, Any]:
 def _regions_record(regions: list[Region], count: int) -> dict[str, Any]:
     return {
         "from_frame": count,
-        "regions": [
-            {"label": r.label, "box": [round(v, 1) for v in r.box], "score": round(r.score, 4)}
-            for r in regions
-        ],
+        "regions": [region_record(r) for r in regions],
     }
 
 

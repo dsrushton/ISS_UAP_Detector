@@ -29,6 +29,8 @@ class Settings:
     # Detect / broadcast
     source: str = ""  # empty = the live feed in the config
     weights: str = "best_map_model.pth"
+    # Optional second model for lens flares, sun, panels, total darkness and no feed.
+    second_weights: str = ""
     profile: str = ""
     # Retrain
     data: list[str] = field(default_factory=list)
@@ -38,6 +40,10 @@ class Settings:
     batch_size: str = "8"
     learning_rate: str = "0.0001"
     compare: bool = True
+    # "rcnn-boxes" or "yolo-seg"; and an optional TOML file of training settings
+    # (held-out folders, patience, image size), which the form's fields override.
+    train_kind: str = "rcnn-boxes"
+    train_config: str = ""
     # Relabel
     review_root: str = "data/masks-jan"
     captures_dir: str = "Detections/AVI"
@@ -73,6 +79,8 @@ def detect_command(settings: Settings) -> list[str]:
     if settings.source.strip():
         command.append(settings.source.strip())
     command += ["--weights", settings.weights.strip()]
+    if settings.second_weights.strip():
+        command += ["--second-weights", settings.second_weights.strip()]
     if settings.profile.strip():
         command += ["--profile", settings.profile.strip()]
     return command
@@ -83,6 +91,11 @@ def train_command(settings: Settings, check: bool = False) -> list[str]:
     if not settings.data:
         raise ValueError("Add at least one folder of labelled frames.")
     command = [*_base(), "train", "--progress-json"]
+    if settings.train_config.strip():
+        command += ["--config", settings.train_config.strip()]
+    if settings.train_kind.strip() not in ("", "rcnn-boxes"):
+        # The box trainer is the default and is started exactly as before.
+        command += ["--kind", settings.train_kind.strip()]
     for folder in settings.data:
         command += ["--data", folder]
     for flag, text, kind in (
@@ -99,7 +112,8 @@ def train_command(settings: Settings, check: bool = False) -> list[str]:
     if check:
         return [*command, "--check"]
     command += ["--out", settings.train_out.strip() or "models"]
-    if settings.compare and settings.weights.strip():
+    boxes = settings.train_kind.strip() in ("", "rcnn-boxes")
+    if boxes and settings.compare and settings.weights.strip():
         if (REPO_ROOT / settings.weights.strip()).is_file():
             command += ["--baseline", settings.weights.strip()]
     return command

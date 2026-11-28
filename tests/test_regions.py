@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from uapd.config import RegionConfig
@@ -61,3 +62,45 @@ def test_darkness_needs_a_large_td_region():
     state, notes = _state(space, large)
     assert state == STATE_DARK
     assert notes == {"darkness_area_ratio": 0.5}
+
+
+def test_two_models_combined_each_supply_their_classes():
+    from uapd.pipeline import Region
+    from uapd.regions.combined import CombinedRegionModel
+
+    class Fake:
+        def __init__(self, name, regions):
+            self.name, self.regions, self.closed = name, regions, False
+
+        def describe(self):
+            return {"kind": self.name}
+
+        def detect(self, frame):
+            return list(self.regions)
+
+        def close(self):
+            self.closed = True
+
+    shape = ((0.0, 0.0), (9.0, 0.0), (0.0, 9.0))
+    outlines = Fake(
+        "outlines",
+        [Region("space", (0, 0, 9, 9), 0.9, shape), Region("lf", (1, 1, 2, 2), 0.95)],
+    )
+    boxes = Fake(
+        "boxes",
+        [
+            Region("lf", (3, 3, 5, 5), 0.99),
+            Region("space", (0, 0, 9, 9), 1.0),
+            Region("td", (0, 0, 9, 9), 0.5),
+        ],
+    )
+    model = CombinedRegionModel(outlines, boxes)
+    found = model.detect(np.zeros((10, 10, 3), np.uint8))
+    assert [(r.label, r.score, bool(r.outline)) for r in found] == [
+        ("lf", 0.99, False),  # the box model's flare, not the outline model's
+        ("space", 0.9, True),  # the outline model's space, not the box model's
+        ("td", 0.5, False),
+    ]
+    assert model.describe()["first"] == {"kind": "outlines"}
+    model.close()
+    assert outlines.closed and boxes.closed

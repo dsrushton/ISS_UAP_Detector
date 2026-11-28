@@ -35,6 +35,22 @@ class Region:
     outline: tuple[tuple[float, float], ...] = ()
 
 
+def region_record(region: Region) -> dict[str, Any]:
+    """A region as it is written to reports and event files.
+
+    A box model's regions are written as before; an outline is added only for a
+    region that has one.
+    """
+    record: dict[str, Any] = {
+        "label": region.label,
+        "box": [round(v, 1) for v in region.box],
+        "score": round(region.score, 4),
+    }
+    if region.outline:
+        record["outline"] = [[round(x, 1), round(y, 1)] for x, y in region.outline]
+    return record
+
+
 @dataclass(frozen=True)
 class Detection:
     """A candidate object that the pipeline accepted on this frame."""

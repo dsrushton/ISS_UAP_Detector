@@ -79,6 +79,12 @@ class TrainConfig:
     # Random flips of training frames. Validation frames are never flipped.
     hflip: bool = True
     vflip: bool = True
+    # Random changes of hue, saturation and brightness (yolo-seg only). Off, as in
+    # the January 2025 recipe: colour is a main cue between Earth, space and station.
+    color_jitter: bool = False
+    # Keep the weights of every epoch (epoch-01, epoch-02, ...) beside best and
+    # last, so any of them can be tried in the app.
+    keep_epochs: bool = True
     amp: bool = True
     workers: int = 0
     seed: int = 0

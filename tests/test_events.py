@@ -109,3 +109,17 @@ def test_nothing_is_written_without_a_recording(tmp_path):
     log.close()
     assert log.written == []
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_region_is_written_with_its_outline_only_when_it_has_one():
+    from uapd.pipeline import Region, region_record
+
+    assert region_record(Region("space", (0, 0, 10.04, 20), 0.98765)) == {
+        "label": "space",
+        "box": [0, 0, 10.0, 20],
+        "score": 0.9877,
+    }
+    shaped = region_record(
+        Region("space", (0, 0, 10, 20), 0.9, ((0.0, 0.0), (10.0, 0.0), (0.0, 20.0)))
+    )
+    assert shaped["outline"] == [[0.0, 0.0], [10.0, 0.0], [0.0, 20.0]]

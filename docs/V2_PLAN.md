@@ -253,3 +253,17 @@ What Relabel needs to do, in build order (1 and 2 are built, as is a viewer for 
 4. Box editing on a frame. Mask editing stays outside the app (SAM2 in CVAT or Label Studio) with an importer into `labels.json`.
 
 Open questions for Relabel: whether frames exported from recordings are cropped the same way as the old training frames (`uapd train --check` reports frame sizes per folder); whether to train `moon` once there are more than 215 boxes.
+
+## 11. Parked: region memory through darkness (noted 27 November 2026)
+
+Not designed or built. To be taken up if running two region models together (`--second-weights`, section 10 and `uapd/regions/combined.py`) proves efficient enough in live use.
+
+**Why total darkness stops detection, and why that is worth keeping.** With no light, the region model relabels the Earth as space. Lightning and large cities on the night-side Earth then sit inside the search area and are flagged. In darkness the camera also records heavy cosmic-ray hits. So a `td` (total darkness) region from the box model arresting detection has been valuable, and it should stay the default behaviour.
+
+**The idea.** Keep a memory of the regions from before the darkness began - where the Earth, the station and space were while they could still be told apart - and use it during darkness, in place of stopping altogether or of trusting what the model says in the dark. Detection could then continue in the remembered space and stay out of the remembered Earth.
+
+**Open points for when it is designed.**
+- The camera view must not have changed since the memory was taken; a camera switch or a zoom has to drop it.
+- The Earth's limb moves as the station orbits, so a remembered Earth outline ages. How long it stays usable is not known.
+- Cosmic-ray hits are single-frame events anywhere in the frame; the tracker's confirmation over several frames already rejects most of them, but that has not been measured in darkness.
+- The outline model gives the shapes the memory would hold; the box model gives the `td` signal that says when to use it. That is the two-model arrangement.

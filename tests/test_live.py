@@ -99,3 +99,39 @@ def test_avoid_boxes_from_the_display_are_applied(detector):
         )
     assert out.anomalies == []
     assert detector.last_result.rejected[0].gates == ("avoid_box",)
+
+
+def test_outlined_regions_are_drawn_as_shapes_and_box_results_are_left_alone(detector):
+    from uapd.pipeline import Region
+    from uapd.runtime.live import REGION_OUTLINES, draw_with_outlines
+
+    calls = []
+
+    def draw_boxes(frame, detections):
+        calls.append({k: list(v) for k, v in detections.rcnn_boxes.items()})
+        return frame.copy()
+
+    colours = {"space": (0, 0, 255), "lf": (0, 255, 255)}
+    frame = np.zeros((720, 939, 3), np.uint8)
+
+    # A box model's results go straight to the legacy drawing.
+    plain = detector.process_frame(feed())
+    assert REGION_OUTLINES not in plain.metadata
+    picture = draw_with_outlines(draw_boxes, frame, plain, colours)
+    assert calls[-1] == plain.rcnn_boxes and not picture.any()
+
+    # A segmentation model's regions: the outlined class loses its rectangle and
+    # gets its shape; a class with only a box keeps the rectangle.
+    triangle = ((100.0, 100.0), (400.0, 100.0), (100.0, 400.0))
+    result = detector.last_result
+    result.regions[:] = [
+        Region("space", (100, 100, 400, 400), 0.9, triangle),
+        Region("lf", (500, 500, 540, 540), 0.8),
+    ]
+    shaped = detector._to_legacy(result, 0, False)
+    assert [label for label, _, _ in shaped.metadata[REGION_OUTLINES]] == ["space"]
+    picture = draw_with_outlines(draw_boxes, frame, shaped, colours)
+    assert calls[-1] == {"space": [], "lf": [[500, 500, 540, 540]]}
+    assert shaped.rcnn_boxes["space"] == [[100, 100, 400, 400]]  # put back for the loop
+    assert picture[100, 250].tolist() == [0, 0, 255]  # along the outline's top edge
+    assert picture[399, 399].tolist() == [0, 0, 0]  # the box's far corner is not drawn

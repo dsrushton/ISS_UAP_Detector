@@ -18,12 +18,15 @@ from typing import Any
 import numpy as np
 
 from uapd.config import RegionConfig
+from uapd.labels.automask import MaskSettings, mask_to_polygons
 from uapd.pipeline import PipelineError, Region
 from uapd.regions.manifest import KIND_YOLO_SEG, ManifestError, read_manifest
 from uapd.regions.rcnn import sha256_file
 
 DEFAULT_CONFIDENCE = 0.4
 DEFAULT_IMAGE_SIZE = 960
+# How a predicted mask becomes outlines: small specks dropped, light smoothing.
+OUTLINE = MaskSettings(smooth=3, min_piece=0.0005, simplify=1.0)
 
 
 class YoloSegRegionModel:
@@ -77,6 +80,7 @@ class YoloSegRegionModel:
             conf=self.confidence,
             max_det=self.config.max_boxes,
             device=self.device,
+            retina_masks=True,  # masks at the frame's own size
             verbose=False,
         )[0]
         if result.boxes is None or len(result.boxes) == 0:
@@ -84,18 +88,24 @@ class YoloSegRegionModel:
         boxes = result.boxes.xyxy.cpu().tolist()
         labels = result.boxes.cls.cpu().tolist()
         scores = result.boxes.conf.cpu().tolist()
-        outlines = result.masks.xy if result.masks is not None else [()] * len(boxes)
+        masks = result.masks.data.cpu().numpy() > 0.5 if result.masks is not None else None
+        height, width = frame.shape[:2]
         regions = []
-        for box, label, score, points in zip(boxes, labels, scores, outlines, strict=True):
-            outline = tuple((float(x), float(y)) for x, y in points) if len(points) >= 3 else ()
-            regions.append(
-                Region(
-                    label=self.classes[int(label) + 1],
-                    box=tuple(float(v) for v in box),
-                    score=float(score),
-                    outline=outline,
+        for index, (box, label, score) in enumerate(zip(boxes, labels, scores, strict=True)):
+            name = self.classes[int(label) + 1]
+            pieces = []
+            if masks is not None and masks[index].shape == (height, width):
+                # Each separate piece of the mask is a region of its own, and a hole
+                # in a piece stays a hole (see uapd.labels.automask.mask_to_polygons).
+                pieces, _ = mask_to_polygons(masks[index], (0, 0, width, height), OUTLINE)
+            if not pieces:
+                regions.append(Region(name, tuple(float(v) for v in box), float(score)))
+                continue
+            for points in pieces:
+                xs, ys = [p[0] for p in points], [p[1] for p in points]
+                regions.append(
+                    Region(name, (min(xs), min(ys), max(xs), max(ys)), float(score), points)
                 )
-            )
         regions.sort(key=lambda r: r.score, reverse=True)
         return regions
 

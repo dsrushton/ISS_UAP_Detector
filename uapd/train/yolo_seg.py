@@ -169,6 +169,8 @@ def train_yolo_seg(job: TrainJob) -> dict[str, Any]:
         patience=config.patience or config.epochs,
         fliplr=0.5 if config.hflip else 0.0,
         flipud=0.5 if config.vflip else 0.0,
+        **({} if config.color_jitter else {"hsv_h": 0.0, "hsv_s": 0.0, "hsv_v": 0.0}),
+        save_period=1 if config.keep_epochs else -1,
         workers=config.workers,
         seed=config.seed,
         device=job.device,
@@ -185,8 +187,19 @@ def train_yolo_seg(job: TrainJob) -> dict[str, Any]:
         "best_map": best["score"] if best["score"] >= 0 else None,
         "stopped_early": len(job.run["epochs"]) < config.epochs,
     }
-    for name in ("last", "best"):
-        source = weights / f"{name}.pt"
+    # ultralytics numbers its per-epoch files from 0.
+    kept = {
+        f"epoch-{int(p.stem[5:]) + 1:02d}": (p, int(p.stem[5:]) + 1)
+        for p in sorted(weights.glob("epoch*.pt"))
+        if p.stem[5:].isdigit()
+    }
+    files = {
+        "last": (weights / "last.pt", len(job.run["epochs"])),
+        "best": (weights / "best.pt", best["epoch"]),
+        **kept,
+    }
+    scores = {entry["epoch"]: entry["val"]["map"] for entry in job.run["epochs"]}
+    for name, (source, epoch) in files.items():
         if not source.is_file():
             continue
         target = run_dir / f"{name}.pt"
@@ -202,20 +215,21 @@ def train_yolo_seg(job: TrainJob) -> dict[str, Any]:
                 record={
                     "trained": {
                         "run": job.run_dir.name,
-                        "epoch": best["epoch"] if name == "best" else len(job.run["epochs"]),
+                        "epoch": epoch,
                         "saved": now(),
                         "uapd_version": job.run["uapd_version"],
                         "commit": job.run["commit"],
                         "train_config": config.to_dict(),
                         "train_config_fingerprint": config.fingerprint(),
                         "init": start,
-                        "val": {"map": best["score"] if name == "best" else None},
+                        "val": {"map": scores.get(epoch)},
                     },
                     "weights_sha256": sha256_file(target),
                 },
             ),
         )
-        result[f"{name}_weights"] = str(job.run_dir / f"{name}.pt")
+        if name in ("last", "best"):
+            result[f"{name}_weights"] = str(job.run_dir / f"{name}.pt")
     if "best_weights" not in result:
         raise TrainError(f"ultralytics wrote no weights in {weights}")
     report.log(

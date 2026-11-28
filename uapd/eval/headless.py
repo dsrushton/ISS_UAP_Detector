@@ -21,7 +21,7 @@ from typing import Any
 import numpy as np
 
 from uapd import __version__
-from uapd.pipeline import Detection, FrameResult, Pipeline
+from uapd.pipeline import Detection, FrameResult, Pipeline, region_record
 from uapd.sources import FrameSource
 
 REPORT_SCHEMA_VERSION = 3
@@ -141,10 +141,7 @@ def _frame_record(result: FrameResult) -> dict[str, Any]:
     record: dict[str, Any] = {
         "index": result.index,
         "state": result.state,
-        "regions": [
-            {"label": r.label, "box": [round(v, 1) for v in r.box], "score": round(r.score, 4)}
-            for r in result.regions
-        ],
+        "regions": [region_record(r) for r in result.regions],
         "detections": [_detection_record(d) for d in result.detections],
     }
     if result.pending:

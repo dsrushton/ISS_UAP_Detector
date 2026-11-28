@@ -214,6 +214,10 @@ def train_rcnn(job: TrainJob) -> dict[str, Any]:
             record={**record(epoch, val), "weights_sha256": sha256_file(last)},
         )
         write_manifest(last, saved)
+        if config.keep_epochs:
+            kept = job.run_dir / f"epoch-{epoch:02d}.pth"
+            shutil.copyfile(last, kept)
+            write_manifest(kept, saved)
 
         value = val["map"] if val and val["map"] is not None else None
         is_best = value is None or value >= best_map
