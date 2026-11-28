@@ -12,5 +12,9 @@
 #
 # Total darkness stopping detection is wanted (docs/V2_PLAN.md, section 11), so the
 # default is to run WITHOUT this profile. It is here for comparison.
+#
+# Only for best_map_model.pth (models/2025best-nomoon.pth is the same file). A model
+# trained by uapd train says in its own manifest how to be fed; forcing this input on
+# one makes it find almost nothing.
 [regions]
 input = "rgb-normalized"

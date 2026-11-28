@@ -232,6 +232,8 @@ def train_yolo_seg(job: TrainJob) -> dict[str, Any]:
             result[f"{name}_weights"] = str(job.run_dir / f"{name}.pt")
     if "best_weights" not in result:
         raise TrainError(f"ultralytics wrote no weights in {weights}")
+    # The run folder has its own copies now; ultralytics' are duplicates.
+    shutil.rmtree(weights, ignore_errors=True)
     report.log(
         f"\nBest model: {result['best_weights']} "
         f"(epoch {result['best_epoch']}, mask mAP {result['best_map']})"

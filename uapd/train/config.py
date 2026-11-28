@@ -82,9 +82,10 @@ class TrainConfig:
     # Random changes of hue, saturation and brightness (yolo-seg only). Off, as in
     # the January 2025 recipe: colour is a main cue between Earth, space and station.
     color_jitter: bool = False
-    # Keep the weights of every epoch (epoch-01, epoch-02, ...) beside best and
-    # last, so any of them can be tried in the app.
-    keep_epochs: bool = True
+    # Also keep the weights of every epoch (epoch-01, epoch-02, ...) beside best
+    # and last, so any of them can be tried in the app. Off: a run folder then
+    # holds two weights files, not dozens.
+    keep_epochs: bool = False
     amp: bool = True
     workers: int = 0
     seed: int = 0
